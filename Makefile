@@ -1,6 +1,6 @@
 include ./Makefile.inc
 
-SERVER_SOURCES=$(wildcard src/server/*.c)
+SERVER_SOURCES=$(wildcard src/*.c src/server/*.c)
 CLIENT_SOURCES=$(wildcard src/client/*.c)
 SHARED_SOURCES=$(wildcard src/shared/*.c)
 
