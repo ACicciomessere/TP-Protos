@@ -1,6 +1,6 @@
-#include "../shared/shared.h"
+//#include "../shared/shared.h"
 
-int main() {
-    sayHello();
-    return 0;
-}
+//int main() {
+//    sayHello();
+//    return 0;
+//}
