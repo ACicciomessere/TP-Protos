@@ -25,13 +25,13 @@ void show_help(const char* program) {
 
 void show_version() {
     printf("SOCKS5 Proxy Client v1.0\n");
-    printf("ITBA Communication Protocols 2025/1\n");
+    printf("ITBA Protocolos de Comunicación 2025-1C\n");
 }
 
 void add_user(const char* user_pass) {
     char* separator = strchr(user_pass, ':');
     if (separator == NULL) {
-        fprintf(stderr, "Error: Invalid format. Use user:password\n");
+        fprintf(stderr, "Error: Formato inválido. Use user:password\n");
         exit(1);
     }
     
@@ -39,33 +39,146 @@ void add_user(const char* user_pass) {
     const char* user = user_pass;
     const char* password = separator + 1;
     
-    printf("User added: %s\n", user);
-    // Here would go the logic to add the user to the server
+    // Conectar al servidor
+    int sock = mgmt_connect_to_server();
+    if (sock < 0) {
+        fprintf(stderr, "Error: No se pudo conectar al servidor de gestión\n");
+        exit(1);
+    }
+    
+    // Enviar comando
+    if (mgmt_send_command(sock, CMD_ADD_USER, user, password) < 0) {
+        fprintf(stderr, "Error: No se pudo enviar el comando\n");
+        mgmt_close_connection(sock);
+        exit(1);
+    }
+    
+    // Recibir respuesta
+    mgmt_response_t response;
+    if (mgmt_receive_response(sock, &response) < 0) {
+        fprintf(stderr, "Error: No se pudo recibir la respuesta\n");
+        mgmt_close_connection(sock);
+        exit(1);
+    }
+    
+    // Mostrar resultado
+    if (response.success) {
+        printf("✓ %s\n", response.message);
+    } else {
+        printf("✗ %s\n", response.message);
+    }
+    
+    mgmt_close_connection(sock);
 }
 
 void delete_user(const char* user) {
-    printf("User deleted: %s\n", user);
-    // Here would go the logic to delete the user from the server
+    // Conectar al servidor
+    int sock = mgmt_connect_to_server();
+    if (sock < 0) {
+        fprintf(stderr, "Error: No se pudo conectar al servidor de gestión\n");
+        exit(1);
+    }
+    
+    // Enviar comando
+    if (mgmt_send_command(sock, CMD_DEL_USER, user, NULL) < 0) {
+        fprintf(stderr, "Error: No se pudo enviar el comando\n");
+        mgmt_close_connection(sock);
+        exit(1);
+    }
+    
+    // Recibir respuesta
+    mgmt_response_t response;
+    if (mgmt_receive_response(sock, &response) < 0) {
+        fprintf(stderr, "Error: No se pudo recibir la respuesta\n");
+        mgmt_close_connection(sock);
+        exit(1);
+    }
+    
+    // Mostrar resultado
+    if (response.success) {
+        printf("✓ %s\n", response.message);
+    } else {
+        printf("✗ %s\n", response.message);
+    }
+    
+    mgmt_close_connection(sock);
 }
 
 void list_users() {
-    printf("Configured users:\n");
-    printf("  admin\n");
-    printf("  user1\n");
-    // Here would go the logic to get the real list of users
+    // Conectar al servidor
+    int sock = mgmt_connect_to_server();
+    if (sock < 0) {
+        fprintf(stderr, "Error: No se pudo conectar al servidor de gestión\n");
+        exit(1);
+    }
+    
+    // Enviar comando
+    if (mgmt_send_command(sock, CMD_LIST_USERS, NULL, NULL) < 0) {
+        fprintf(stderr, "Error: No se pudo enviar el comando\n");
+        mgmt_close_connection(sock);
+        exit(1);
+    }
+    
+    // Recibir respuesta
+    mgmt_response_t response;
+    if (mgmt_receive_response(sock, &response) < 0) {
+        fprintf(stderr, "Error: No se pudo recibir la respuesta\n");
+        mgmt_close_connection(sock);
+        exit(1);
+    }
+    
+    // Mostrar resultado
+    if (response.success) {
+        printf("Usuarios configurados (%d):\n", response.user_count);
+        for (int i = 0; i < response.user_count; i++) {
+            printf("  • %s\n", response.users[i].username);
+        }
+        if (response.user_count == 0) {
+            printf("  (No hay usuarios configurados)\n");
+        }
+    } else {
+        printf("✗ %s\n", response.message);
+    }
+    
+    mgmt_close_connection(sock);
 }
 
 void show_stats() {
-    printf("Stats:\n");
-    printf("  Total connections: 100\n");
-    printf("  Total traffic: 10000 bytes\n");
-    printf("  Current users: 5\n");
-    printf("  Current connections: 10\n");
-    printf("  Current traffic: 1000 bytes\n");
-    printf("  Current users: 5\n");
-    printf("  Current connections: 10\n");
-    printf("  Current traffic: 1000 bytes\n");
-    // Here would go the logic to get the real stats
+    // Conectar al servidor
+    int sock = mgmt_connect_to_server();
+    if (sock < 0) {
+        fprintf(stderr, "Error: No se pudo conectar al servidor de gestión\n");
+        exit(1);
+    }
+    
+    // Enviar comando
+    if (mgmt_send_command(sock, CMD_STATS, NULL, NULL) < 0) {
+        fprintf(stderr, "Error: No se pudo enviar el comando\n");
+        mgmt_close_connection(sock);
+        exit(1);
+    }
+    
+    // Recibir respuesta
+    mgmt_response_t response;
+    if (mgmt_receive_response(sock, &response) < 0) {
+        fprintf(stderr, "Error: No se pudo recibir la respuesta\n");
+        mgmt_close_connection(sock);
+        exit(1);
+    }
+    
+    // Mostrar resultado
+    if (response.success) {
+        printf("Estadísticas del Proxy SOCKS5:\n");
+        printf("  Conexiones totales: %llu\n", response.stats.total_connections);
+        printf("  Conexiones actuales: %llu\n", response.stats.current_connections);
+        printf("  Bytes transferidos (total): %llu\n", response.stats.total_bytes_transferred);
+        printf("  Bytes transferidos (sesión): %llu\n", response.stats.current_bytes_transferred);
+        printf("  Usuarios activos: %d\n", response.stats.current_users);
+    } else {
+        printf("✗ %s\n", response.message);
+    }
+    
+    mgmt_close_connection(sock);
 }
 
 int main(int argc, char *argv[]) {
@@ -106,7 +219,7 @@ int main(int argc, char *argv[]) {
                 show_version();
                 break;
             default:
-                fprintf(stderr, "Invalid option. Use -h for help.\n");
+                fprintf(stderr, "Opción inválida. Use -h para ayuda.\n");
                 return 1;
         }
     }

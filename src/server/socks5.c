@@ -6,11 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/sendfile.h>
 #include <unistd.h>
 
 #include "socks5.h"
 #include "util.h"
+#include "../shared/shared.h"
 
 #define READ_BUFFER_SIZE 2048
 #define MAX_HOSTNAME_LENGTH 255
@@ -382,7 +382,11 @@ int handleConnectionData(int clientSocket, int remoteSocket) {
                 alive = 0;
             } else {
                 int otherSocket = pollFds[i].fd == clientSocket ? remoteSocket : clientSocket;
-                send(otherSocket, receiveBuffer, received, 0);
+                ssize_t sent = send(otherSocket, receiveBuffer, received, 0);
+                if (sent > 0) {
+                    // Actualizar estadísticas con los bytes transferidos
+                    mgmt_update_stats(sent, 0);
+                }
             }
         }
     } while (alive);

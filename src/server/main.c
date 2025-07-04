@@ -6,72 +6,243 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <signal.h>
+#include <pthread.h>
 
 #include "socks5.h"
 #include "util.h"
+#include "../shared/shared.h"
 
 #define MAX_PENDING_CONNECTION_REQUESTS 5
-#define SOURCE_PORT 1080
+#define SOCKS5_PORT 1080
+#define MGMT_PORT 8080
+
+// Manejar señal SIGCHLD para evitar procesos zombie
+void sigchld_handler(int sig) {
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+}
+
+// Manejar señal SIGTERM y SIGINT para limpieza
+void cleanup_handler(int sig);
+
+// Función para manejar conexiones de gestión
+void handle_management_connection(int client_sock) {
+    printf("[INF] Handling management connection\n");
+    
+    if (mgmt_handle_client(client_sock) < 0) {
+        printf("[ERR] Error handling management client\n");
+    }
+    
+    close(client_sock);
+    printf("[INF] Management connection closed\n");
+}
+
+// Función para manejar conexiones SOCKS5
+void handle_socks5_connection(int client_sock) {
+    printf("[INF] Handling SOCKS5 connection\n");
+    
+    // Actualizar estadísticas - nueva conexión
+    mgmt_update_stats(0, 1);
+    
+    int result = handleClient(client_sock);
+    if (result < 0) {
+        printf("[ERR] Error handling SOCKS5 client\n");
+    }
+    
+    // Actualizar estadísticas - conexión cerrada
+    mgmt_update_stats(0, -1);
+    
+    close(client_sock);
+    printf("[INF] SOCKS5 connection closed\n");
+}
+
+// Crear socket servidor
+int create_server_socket(int port) {
+    int serverSocket = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
+    if (serverSocket < 0) {
+        perror("[ERR] socket()");
+        return -1;
+    }
+
+    // Configurar para reutilizar la dirección
+    int opt = 1;
+    if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("[ERR] setsockopt()");
+        close(serverSocket);
+        return -1;
+    }
+
+    struct sockaddr_in6 srcSocket;
+    memset((char*)&srcSocket, 0, sizeof(srcSocket));
+    srcSocket.sin6_family = AF_INET6;
+    srcSocket.sin6_port = htons(port);
+    memcpy(&srcSocket.sin6_addr, &in6addr_any, sizeof(in6addr_any));
+
+    if (bind(serverSocket, (struct sockaddr*)&srcSocket, sizeof(srcSocket)) != 0) {
+        perror("[ERR] bind()");
+        close(serverSocket);
+        return -1;
+    }
+
+    if (listen(serverSocket, MAX_PENDING_CONNECTION_REQUESTS) != 0) {
+        perror("[ERR] listen()");
+        close(serverSocket);
+        return -1;
+    }
+
+    return serverSocket;
+}
+
+// Manejar señal SIGTERM y SIGINT para limpieza
+void cleanup_handler(int sig) {
+    printf("[INF] Received signal %d, cleaning up...\n", sig);
+    mgmt_cleanup_shared_memory();
+    exit(0);
+}
 
 int main(int argc, const char* argv[]) {
     // Disable buffering on stdout and stderr
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    // Create the socket. We'll use IPv6 only, IPv6 has backwards compatibility with IPv4
-    // so by using IPv6, we can also handle incoming IPv4 connections ;)
-    int serverSocket = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-    if (serverSocket < 0) {
-        perror("[ERR] socket()");
+    // Inicializar memoria compartida
+    if (mgmt_init_shared_memory() < 0) {
+        fprintf(stderr, "[ERR] Failed to initialize shared memory\n");
         exit(1);
     }
 
-    // We want to bind our socket on IPv6 listening on all available IP addresses on port SOURCE_PORT.
-    struct sockaddr_in6 srcSocket;
-    memset((char*)&srcSocket, 0, sizeof(srcSocket));
-    srcSocket.sin6_family = AF_INET6;
-    srcSocket.sin6_port = htons(SOURCE_PORT);
-    memcpy(&srcSocket.sin6_addr, &in6addr_any, sizeof(in6addr_any));
+    // Configurar manejador de señales para evitar procesos zombie
+    signal(SIGCHLD, sigchld_handler);
 
-    if (bind(serverSocket, (struct sockaddr*)&srcSocket, sizeof(srcSocket)) != 0) {
-        perror("[ERR] bind()");
+    // Configurar manejador de señales para limpieza
+    signal(SIGTERM, cleanup_handler);
+    signal(SIGINT, cleanup_handler);
+
+    // Crear socket para SOCKS5
+    int socks5Socket = create_server_socket(SOCKS5_PORT);
+    if (socks5Socket < 0) {
+        mgmt_cleanup_shared_memory();
         exit(1);
     }
 
-    if (listen(serverSocket, MAX_PENDING_CONNECTION_REQUESTS) != 0) {
-        perror("[ERR] listen()");
+    // Crear socket para gestión
+    int mgmtSocket = create_server_socket(MGMT_PORT);
+    if (mgmtSocket < 0) {
+        close(socks5Socket);
+        mgmt_cleanup_shared_memory();
         exit(1);
     }
 
-    // Get the local address at which our socket was found, for nothing more than printing it out.
+    // Mostrar información de binding
     struct sockaddr_storage boundAddress;
     socklen_t boundAddressLen = sizeof(boundAddress);
-    if (getsockname(serverSocket, (struct sockaddr*)&boundAddress, &boundAddressLen) >= 0) {
+    
+    if (getsockname(socks5Socket, (struct sockaddr*)&boundAddress, &boundAddressLen) >= 0) {
         char addrBuffer[128];
         printSocketAddress((struct sockaddr*)&boundAddress, addrBuffer);
-        printf("[INF] Binding to %s\n", addrBuffer);
-    } else
-        perror("[WRN] Failed to getsockname()");
+        printf("[INF] SOCKS5 server listening on %s\n", addrBuffer);
+    }
+    
+    if (getsockname(mgmtSocket, (struct sockaddr*)&boundAddress, &boundAddressLen) >= 0) {
+        char addrBuffer[128];
+        printSocketAddress((struct sockaddr*)&boundAddress, addrBuffer);
+        printf("[INF] Management server listening on %s\n", addrBuffer);
+    }
 
-    // Handle incomming connections
+    // Usar select() para manejar múltiples sockets
+    fd_set master_set, read_set;
+    int max_sd;
+    
+    FD_ZERO(&master_set);
+    FD_SET(socks5Socket, &master_set);
+    FD_SET(mgmtSocket, &master_set);
+    max_sd = (socks5Socket > mgmtSocket) ? socks5Socket : mgmtSocket;
+
+    printf("[INF] Server ready, waiting for connections...\n");
+
     while (1) {
-        printf("Listening for next client...\n");
-
-        struct sockaddr_storage clientAddress;
-        socklen_t clientAddressLen = sizeof(clientAddress);
-        int clientHandleSocket = accept(serverSocket, (struct sockaddr*)&clientAddress, &clientAddressLen);
-        if (clientHandleSocket < 0) {
-            perror("[ERR] accept()");
-            exit(1);
-        } else {
-            char addrBuffer[128];
-            printSocketAddress((struct sockaddr*)&clientAddress, addrBuffer);
-            printf("[INF] New connection from %s\n", addrBuffer);
+        read_set = master_set;
+        
+        int select_result = select(max_sd + 1, &read_set, NULL, NULL, NULL);
+        if (select_result < 0) {
+            if (errno == EINTR) {
+                // La señal SIGCHLD interrumpió select(), continuar
+                continue;
+            } else {
+                perror("[ERR] select()");
+                break;
+            }
         }
 
-        handleClient(clientHandleSocket);
+        // Verificar socket SOCKS5
+        if (FD_ISSET(socks5Socket, &read_set)) {
+            struct sockaddr_storage clientAddress;
+            socklen_t clientAddressLen = sizeof(clientAddress);
+            int clientSocket = accept(socks5Socket, (struct sockaddr*)&clientAddress, &clientAddressLen);
+            
+            if (clientSocket < 0) {
+                perror("[ERR] accept() on SOCKS5 socket");
+                continue;
+            }
 
-        close(clientHandleSocket);
+            char addrBuffer[128];
+            printSocketAddress((struct sockaddr*)&clientAddress, addrBuffer);
+            printf("[INF] New SOCKS5 connection from %s\n", addrBuffer);
+
+            // Crear proceso hijo para manejar la conexión
+            pid_t pid = fork();
+            if (pid == 0) {
+                // Proceso hijo
+                close(socks5Socket);
+                close(mgmtSocket);
+                handle_socks5_connection(clientSocket);
+                exit(0);
+            } else if (pid > 0) {
+                // Proceso padre
+                close(clientSocket);
+            } else {
+                perror("[ERR] fork() for SOCKS5 connection");
+                close(clientSocket);
+            }
+        }
+
+        // Verificar socket de gestión
+        if (FD_ISSET(mgmtSocket, &read_set)) {
+            struct sockaddr_storage clientAddress;
+            socklen_t clientAddressLen = sizeof(clientAddress);
+            int clientSocket = accept(mgmtSocket, (struct sockaddr*)&clientAddress, &clientAddressLen);
+            
+            if (clientSocket < 0) {
+                perror("[ERR] accept() on management socket");
+                continue;
+            }
+
+            char addrBuffer[128];
+            printSocketAddress((struct sockaddr*)&clientAddress, addrBuffer);
+            printf("[INF] New management connection from %s\n", addrBuffer);
+
+            // Crear proceso hijo para manejar la conexión
+            pid_t pid = fork();
+            if (pid == 0) {
+                // Proceso hijo
+                close(socks5Socket);
+                close(mgmtSocket);
+                handle_management_connection(clientSocket);
+                exit(0);
+            } else if (pid > 0) {
+                // Proceso padre
+                close(clientSocket);
+            } else {
+                perror("[ERR] fork() for management connection");
+                close(clientSocket);
+            }
+        }
     }
+
+    close(socks5Socket);
+    close(mgmtSocket);
+    mgmt_cleanup_shared_memory();
+    return 0;
 }
