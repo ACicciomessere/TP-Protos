@@ -150,7 +150,7 @@ int validateUser(const char* username, const char* password, struct socks5args* 
     return 0;
 }
 
-int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args) {
+int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args, char* authenticated_user) {
     ssize_t received;
     char receiveBuffer[READ_BUFFER_SIZE + 1];
     
@@ -219,6 +219,12 @@ int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args) {
     
     // Validate user credentials
     if (validateUser(username, password, args)) {
+        // Store the authenticated username
+        if (authenticated_user) {
+            strncpy(authenticated_user, username, MAX_USERNAME_LEN - 1);
+            authenticated_user[MAX_USERNAME_LEN - 1] = '\0';
+        }
+        
         // Send success response
         if (sendFull(clientSocket, "\x01\x00", 2, 0) < 0) {
             printf("[ERR] Failed to send auth success response\n");
@@ -235,7 +241,9 @@ int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args) {
 }
 
 int handleClient(int clientSocket, struct socks5args* args) {
-    if (handleAuthNegotiation(clientSocket, args))
+    char authenticated_user[MAX_USERNAME_LEN] = {0};
+    
+    if (handleAuthNegotiation(clientSocket, args, authenticated_user))
         return -1;
 
     // The client can now start sending requests.
@@ -251,13 +259,23 @@ int handleClient(int clientSocket, struct socks5args* args) {
         return -1;
 
     // The connection has been established! Now the client and requested server can talk to each other.
+    // If we have an authenticated user, update their connection stats
+    if (authenticated_user[0] != '\0') {
+        mgmt_update_user_stats(authenticated_user, 0, 1); // New connection
+    }
 
-    int status = handleConnectionData(clientSocket, remoteSocket);
+    int status = handleConnectionData(clientSocket, remoteSocket, authenticated_user);
+    
+    // Update connection end stats
+    if (authenticated_user[0] != '\0') {
+        mgmt_update_user_stats(authenticated_user, 0, -1); // Connection ended
+    }
+    
     close(remoteSocket);
     return status;
 }
 
-int handleAuthNegotiation(int clientSocket, struct socks5args* args) {
+int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authenticated_user) {
     ssize_t received;
     char receiveBuffer[READ_BUFFER_SIZE + 1];
 
@@ -312,7 +330,7 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args) {
                 return -1;
                 
             // Perform username/password authentication
-            return handleUsernamePasswordAuth(clientSocket, args);
+            return handleUsernamePasswordAuth(clientSocket, args, authenticated_user);
         } else {
             // Users are configured but client doesn't support username/password auth
             printf("[ERR] Authentication required but client doesn't support username/password!\n");
@@ -550,7 +568,7 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
     return 0;
 }
 
-int handleConnectionData(int clientSocket, int remoteSocket) {
+int handleConnectionData(int clientSocket, int remoteSocket, const char* authenticated_user) {
     ssize_t received;
     char receiveBuffer[4096];
 
@@ -599,7 +617,11 @@ int handleConnectionData(int clientSocket, int remoteSocket) {
                     alive = 0;
                 } else {
                     // Actualizar estadísticas con los bytes transferidos
-                    mgmt_update_stats(sent, 0);
+                    if (authenticated_user && authenticated_user[0] != '\0') {
+                        mgmt_update_user_stats(authenticated_user, sent, 0);
+                    } else {
+                        mgmt_update_stats(sent, 0);
+                    }
                 }
             }
         }

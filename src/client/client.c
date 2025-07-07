@@ -31,7 +31,7 @@ void show_version() {
 void add_user(const char* user_pass) {
     char* separator = strchr(user_pass, ':');
     if (separator == NULL) {
-        fprintf(stderr, "Error: Formato inválido. Use user:password\n");
+        fprintf(stderr, "Error: Invalid format. Use user:password\n");
         exit(1);
     }
     
@@ -39,29 +39,29 @@ void add_user(const char* user_pass) {
     const char* user = user_pass;
     const char* password = separator + 1;
     
-    // Conectar al servidor
+    // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: No se pudo conectar al servidor de gestión\n");
+        fprintf(stderr, "Error: Could not connect to management server\n");
         exit(1);
     }
     
-    // Enviar comando
+    // Send command
     if (mgmt_send_command(sock, CMD_ADD_USER, user, password) < 0) {
-        fprintf(stderr, "Error: No se pudo enviar el comando\n");
+        fprintf(stderr, "Error: Could not send command\n");
         mgmt_close_connection(sock);
         exit(1);
     }
     
-    // Recibir respuesta
-    mgmt_response_t response;
-    if (mgmt_receive_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: No se pudo recibir la respuesta\n");
+    // Receive response
+    mgmt_simple_response_t response;
+    if (mgmt_receive_simple_response(sock, &response) < 0) {
+        fprintf(stderr, "Error: Could not receive response\n");
         mgmt_close_connection(sock);
         exit(1);
     }
     
-    // Mostrar resultado
+    // Show result
     if (response.success) {
         printf("✓ %s\n", response.message);
     } else {
@@ -72,29 +72,29 @@ void add_user(const char* user_pass) {
 }
 
 void delete_user(const char* user) {
-    // Conectar al servidor
+    // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: No se pudo conectar al servidor de gestión\n");
+        fprintf(stderr, "Error: Could not connect to management server\n");
         exit(1);
     }
     
-    // Enviar comando
+    // Send command
     if (mgmt_send_command(sock, CMD_DEL_USER, user, NULL) < 0) {
-        fprintf(stderr, "Error: No se pudo enviar el comando\n");
+        fprintf(stderr, "Error: Could not send command\n");
         mgmt_close_connection(sock);
         exit(1);
     }
     
-    // Recibir respuesta
-    mgmt_response_t response;
-    if (mgmt_receive_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: No se pudo recibir la respuesta\n");
+    // Receive response
+    mgmt_simple_response_t response;
+    if (mgmt_receive_simple_response(sock, &response) < 0) {
+        fprintf(stderr, "Error: Could not receive response\n");
         mgmt_close_connection(sock);
         exit(1);
     }
     
-    // Mostrar resultado
+    // Show result
     if (response.success) {
         printf("✓ %s\n", response.message);
     } else {
@@ -105,36 +105,36 @@ void delete_user(const char* user) {
 }
 
 void list_users() {
-    // Conectar al servidor
+    // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: No se pudo conectar al servidor de gestión\n");
+        fprintf(stderr, "Error: Could not connect to management server\n");
         exit(1);
     }
     
-    // Enviar comando
+    // Send command
     if (mgmt_send_command(sock, CMD_LIST_USERS, NULL, NULL) < 0) {
-        fprintf(stderr, "Error: No se pudo enviar el comando\n");
+        fprintf(stderr, "Error: Could not send command\n");
         mgmt_close_connection(sock);
         exit(1);
     }
     
-    // Recibir respuesta
-    mgmt_response_t response;
-    if (mgmt_receive_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: No se pudo recibir la respuesta\n");
+    // Receive response
+    mgmt_users_response_t response;
+    if (mgmt_receive_users_response(sock, &response) < 0) {
+        fprintf(stderr, "Error: Could not receive response\n");
         mgmt_close_connection(sock);
         exit(1);
     }
     
-    // Mostrar resultado
+    // Show result
     if (response.success) {
-        printf("Usuarios configurados (%d):\n", response.user_count);
+        printf("Configured users (%d):\n", response.user_count);
         for (int i = 0; i < response.user_count; i++) {
             printf("  • %s\n", response.users[i].username);
         }
         if (response.user_count == 0) {
-            printf("  (No hay usuarios configurados)\n");
+            printf("  (No users configured)\n");
         }
     } else {
         printf("✗ %s\n", response.message);
@@ -144,36 +144,63 @@ void list_users() {
 }
 
 void show_stats() {
-    // Conectar al servidor
+    // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: No se pudo conectar al servidor de gestión\n");
+        fprintf(stderr, "Error: Could not connect to management server\n");
         exit(1);
     }
     
-    // Enviar comando
+    // Send command
     if (mgmt_send_command(sock, CMD_STATS, NULL, NULL) < 0) {
-        fprintf(stderr, "Error: No se pudo enviar el comando\n");
+        fprintf(stderr, "Error: Could not send command\n");
         mgmt_close_connection(sock);
         exit(1);
     }
     
-    // Recibir respuesta
-    mgmt_response_t response;
-    if (mgmt_receive_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: No se pudo recibir la respuesta\n");
+    // Receive response
+    mgmt_stats_response_t response;
+    if (mgmt_receive_stats_response(sock, &response) < 0) {
+        fprintf(stderr, "Error: Could not receive response\n");
         mgmt_close_connection(sock);
         exit(1);
     }
     
-    // Mostrar resultado
+    // Show result
     if (response.success) {
-        printf("Estadísticas del Proxy SOCKS5:\n");
-        printf("  Conexiones totales: %llu\n", response.stats.total_connections);
-        printf("  Conexiones actuales: %llu\n", response.stats.current_connections);
-        printf("  Bytes transferidos (total): %llu\n", response.stats.total_bytes_transferred);
-        printf("  Bytes transferidos (sesión): %llu\n", response.stats.current_bytes_transferred);
-        printf("  Usuarios activos: %d\n", response.stats.current_users);
+        printf("═══════════════════════════════════════════════════════════════\n");
+        printf("                    PROXY STATISTICS\n");
+        printf("═══════════════════════════════════════════════════════════════\n\n");
+        
+        // General proxy statistics
+        printf("📊 GENERAL STATISTICS:\n");
+        printf("  • Total connections: %llu\n", response.stats.total_connections);
+        printf("  • Current connections: %llu\n", response.stats.current_connections);
+        printf("  • Peak concurrent connections: %llu\n", response.stats.peak_concurrent_connections);
+        
+        printf("  • Bytes transferred (total): %llu\n", response.stats.total_bytes_transferred);
+        printf("  • Bytes transferred (session): %llu\n", response.stats.current_bytes_transferred);
+        
+        // Show number of configured users
+        printf("  • Configured users: %d\n", response.user_count);
+        
+        // Show server uptime
+        time_t current_time = time(NULL);
+        if (response.stats.server_start_time > 0) {
+            int uptime = current_time - response.stats.server_start_time;
+            int days = uptime / 86400;
+            int hours = (uptime % 86400) / 3600;
+            int minutes = (uptime % 3600) / 60;
+            int seconds = uptime % 60;
+            printf("  • Uptime: %dd %02dh %02dm %02ds\n", days, hours, minutes, seconds);
+        }
+        
+        if (response.stats.total_connections > 0) {
+            uint64_t avg_bytes = response.stats.total_bytes_transferred / response.stats.total_connections;
+            printf("  • Average per connection: %llu bytes\n", avg_bytes);
+        }
+        
+        printf("\n═══════════════════════════════════════════════════════════════\n");
     } else {
         printf("✗ %s\n", response.message);
     }
@@ -219,7 +246,7 @@ int main(int argc, char *argv[]) {
                 show_version();
                 break;
             default:
-                fprintf(stderr, "Opción inválida. Use -h para ayuda.\n");
+                fprintf(stderr, "Invalid option. Use -h for help.\n");
                 return 1;
         }
     }
