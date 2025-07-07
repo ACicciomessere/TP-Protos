@@ -27,6 +27,8 @@
 #include "selector.h"
 #include "socks5nio.h"
 
+#define DEFAULT_SOCKS_PORT 1080
+
 static bool done = false;
 
 static void
@@ -37,7 +39,7 @@ sigterm_handler(const int signal) {
 
 int
 main(const int argc, const char **argv) {
-    unsigned port = 1080;
+    unsigned port = DEFAULT_SOCKS_PORT;
 
     if(argc == 1) {
         // utilizamos el default

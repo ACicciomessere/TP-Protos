@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #define MAX_USERS 10
+#define DEFAULT_SOCKS_PORT 1080
 
 struct users
 {

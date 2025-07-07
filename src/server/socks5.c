@@ -67,8 +67,112 @@ static ssize_t sendFull(int fd, const void* buf, size_t n, int flags) {
     return totalSent;
 }
 
-int handleClient(int clientSocket) {
-    if (handleAuthNegotiation(clientSocket))
+int validateUser(const char* username, const char* password, struct socks5args* args) {
+    if (!username || !password || !args) {
+        return 0;
+    }
+    
+    // Check against configured users
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (args->users[i].name && args->users[i].pass) {
+            if (strcmp(username, args->users[i].name) == 0 && 
+                strcmp(password, args->users[i].pass) == 0) {
+                printf("[INF] User '%s' authenticated successfully\n", username);
+                return 1;
+            }
+        }
+    }
+    
+    printf("[ERR] Authentication failed for user '%s'\n", username);
+    return 0;
+}
+
+int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args) {
+    ssize_t received;
+    char receiveBuffer[READ_BUFFER_SIZE + 1];
+    
+    // Read the username/password request: VER, ULEN, UNAME, PLEN, PASSWD
+    received = recvFull(clientSocket, receiveBuffer, 2, 0);
+    if (received < 0) {
+        printf("[ERR] Failed to receive username/password auth header\n");
+        return -1;
+    }
+    
+    // Check version (should be 1 for username/password auth)
+    if (receiveBuffer[0] != 1) {
+        printf("[ERR] Invalid username/password auth version: %d\n", receiveBuffer[0]);
+        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        return -1;
+    }
+    
+    // Get username length
+    int usernameLen = receiveBuffer[1];
+    if (usernameLen == 0 || usernameLen > 255) {
+        printf("[ERR] Invalid username length: %d\n", usernameLen);
+        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        return -1;
+    }
+    
+    // Read username
+    received = recvFull(clientSocket, receiveBuffer, usernameLen, 0);
+    if (received < 0) {
+        printf("[ERR] Failed to receive username\n");
+        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        return -1;
+    }
+    receiveBuffer[usernameLen] = '\0';
+    char username[256];
+    strncpy(username, receiveBuffer, usernameLen);
+    username[usernameLen] = '\0';
+    
+    // Read password length
+    received = recvFull(clientSocket, receiveBuffer, 1, 0);
+    if (received < 0) {
+        printf("[ERR] Failed to receive password length\n");
+        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        return -1;
+    }
+    
+    int passwordLen = receiveBuffer[0];
+    if (passwordLen == 0 || passwordLen > 255) {
+        printf("[ERR] Invalid password length: %d\n", passwordLen);
+        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        return -1;
+    }
+    
+    // Read password
+    received = recvFull(clientSocket, receiveBuffer, passwordLen, 0);
+    if (received < 0) {
+        printf("[ERR] Failed to receive password\n");
+        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        return -1;
+    }
+    receiveBuffer[passwordLen] = '\0';
+    char password[256];
+    strncpy(password, receiveBuffer, passwordLen);
+    password[passwordLen] = '\0';
+    
+    printf("[INF] Authentication attempt: username='%s'\n", username);
+    
+    // Validate user credentials
+    if (validateUser(username, password, args)) {
+        // Send success response
+        if (sendFull(clientSocket, "\x01\x00", 2, 0) < 0) {
+            printf("[ERR] Failed to send auth success response\n");
+            return -1;
+        }
+        return 0;
+    } else {
+        // Send failure response
+        if (sendFull(clientSocket, "\x01\x01", 2, 0) < 0) {
+            printf("[ERR] Failed to send auth failure response\n");
+        }
+        return -1;
+    }
+}
+
+int handleClient(int clientSocket, struct socks5args* args) {
+    if (handleAuthNegotiation(clientSocket, args))
         return -1;
 
     // The client can now start sending requests.
@@ -90,7 +194,7 @@ int handleClient(int clientSocket) {
     return status;
 }
 
-int handleAuthNegotiation(int clientSocket) {
+int handleAuthNegotiation(int clientSocket, struct socks5args* args) {
     ssize_t received;
     char receiveBuffer[READ_BUFFER_SIZE + 1];
 
@@ -111,35 +215,69 @@ int handleAuthNegotiation(int clientSocket) {
     if (received < 0)
         return -1;
 
-    // We check that the methods specified by the client contains method 0, which is "no authentication required".
-    int hasValidAuthMethod = 0;
+    // Check what authentication methods the client supports
+    int hasNoAuth = 0;
+    int hasUserPass = 0;
+    int hasUsersConfigured = 0;
+    
     printf("[INF] Client specified auth methods: ");
     for (int i = 0; i < nmethods; i++) {
-        hasValidAuthMethod = hasValidAuthMethod || (receiveBuffer[i] == 0);
-        printf("%x%s", receiveBuffer[i], i + 1 == nmethods ? "\n" : ", ");
+        if (receiveBuffer[i] == SOCKS5_AUTH_NONE) {
+            hasNoAuth = 1;
+        } else if (receiveBuffer[i] == SOCKS5_AUTH_USERPASS) {
+            hasUserPass = 1;
+        }
+        printf("%02x%s", receiveBuffer[i], i + 1 == nmethods ? "\n" : ", ");
     }
+    
+    // Check if we have any users configured
+    if (args) {
+        for (int i = 0; i < MAX_USERS; i++) {
+            if (args->users[i].name && args->users[i].pass) {
+                hasUsersConfigured = 1;
+                break;
+            }
+        }
+    }
+    
+    // Determine which authentication method to use
+    if (hasUsersConfigured) {
+        // Users are configured, require username/password authentication
+        if (hasUserPass) {
+            printf("[INF] Using username/password authentication (required)\n");
+            if (sendFull(clientSocket, "\x05\x02", 2, 0) < 0)
+                return -1;
+                
+            // Perform username/password authentication
+            return handleUsernamePasswordAuth(clientSocket, args);
+        } else {
+            // Users are configured but client doesn't support username/password auth
+            printf("[ERR] Authentication required but client doesn't support username/password!\n");
+            if (sendFull(clientSocket, "\x05\xFF", 2, 0) < 0)
+                return -1;
 
-    // If the client didn't specify "no authentication required", send an error and wait for the client to close the connection.
-    if (!hasValidAuthMethod) {
-        printf("[ERR] No valid auth method detected!\n");
+            // Wait for the client to close the TCP connection.
+            printf("[INF] Waiting for client to close the connection.\n");
+            while (recv(clientSocket, receiveBuffer, READ_BUFFER_SIZE, 0) > 0) {}
+            return -1;
+        }
+    } else if (hasNoAuth) {
+        // No users configured, allow no authentication
+        printf("[INF] Using no authentication (no users configured)\n");
+        if (sendFull(clientSocket, "\x05\x00", 2, 0) < 0)
+            return -1;
+        return 0;
+    } else {
+        // No acceptable authentication method found
+        printf("[ERR] No acceptable authentication method found!\n");
         if (sendFull(clientSocket, "\x05\xFF", 2, 0) < 0)
             return -1;
-
-        // TODO: Investigate if we should shutdown to wait for the client to close the TCP connection,
-        // and if so how can we know when the connection was finally closed (since we can't recv() anymore).
-        // shutdown(clientSocket, SHUT_RDWR);
 
         // Wait for the client to close the TCP connection.
         printf("[INF] Waiting for client to close the connection.\n");
         while (recv(clientSocket, receiveBuffer, READ_BUFFER_SIZE, 0) > 0) {}
         return -1;
     }
-
-    // Tell the client we're using auth method 00 ("no authentication required").
-    if (sendFull(clientSocket, "\x05\x00", 2, 0) < 0)
-        return -1;
-
-    return 0;
 }
 
 int handleRequest(int clientSocket, struct addrinfo** connectAddresses) {

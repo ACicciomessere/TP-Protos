@@ -14,10 +14,9 @@
 #include "socks5.h"
 #include "util.h"
 #include "../shared/shared.h"
+#include "../args.h"
 
 #define MAX_PENDING_CONNECTION_REQUESTS 5
-#define SOCKS5_PORT 1080
-#define MGMT_PORT 8080
 
 // Manejar señal SIGCHLD para evitar procesos zombie
 void sigchld_handler(int sig) {
@@ -40,13 +39,13 @@ void handle_management_connection(int client_sock) {
 }
 
 // Función para manejar conexiones SOCKS5
-void handle_socks5_connection(int client_sock) {
+void handle_socks5_connection(int client_sock, struct socks5args* args) {
     printf("[INF] Handling SOCKS5 connection\n");
     
     // Actualizar estadísticas - nueva conexión
     mgmt_update_stats(0, 1);
     
-    int result = handleClient(client_sock);
+    int result = handleClient(client_sock, args);
     if (result < 0) {
         printf("[ERR] Error handling SOCKS5 client\n");
     }
@@ -102,10 +101,40 @@ void cleanup_handler(int sig) {
     exit(0);
 }
 
-int main(int argc, const char* argv[]) {
+int main(int argc, char* argv[]) {
     // Disable buffering on stdout and stderr
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+
+    // Parse command line arguments
+    struct socks5args args;
+    parse_args(argc, argv, &args);
+
+    // Show configuration
+    printf("[INF] SOCKS5 server configuration:\n");
+    printf("  SOCKS5 address: %s:%d\n", args.socks_addr, args.socks_port);
+    printf("  Management address: %s:%d\n", args.mng_addr, args.mng_port);
+    printf("  Disectors enabled: %s\n", args.disectors_enabled ? "yes" : "no");
+    
+    // Show configured users
+    int userCount = 0;
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (args.users[i].name && args.users[i].pass) {
+            userCount++;
+        }
+    }
+    printf("  Configured users: %d\n", userCount);
+    for (int i = 0; i < MAX_USERS; i++) {
+        if (args.users[i].name && args.users[i].pass) {
+            printf("    - %s\n", args.users[i].name);
+        }
+    }
+    
+    if (userCount > 0) {
+        printf("[INF] Username/password authentication will be required\n");
+    } else {
+        printf("[INF] No authentication will be required\n");
+    }
 
     // Inicializar memoria compartida
     if (mgmt_init_shared_memory() < 0) {
@@ -121,14 +150,14 @@ int main(int argc, const char* argv[]) {
     signal(SIGINT, cleanup_handler);
 
     // Crear socket para SOCKS5
-    int socks5Socket = create_server_socket(SOCKS5_PORT);
+    int socks5Socket = create_server_socket(args.socks_port);
     if (socks5Socket < 0) {
         mgmt_cleanup_shared_memory();
         exit(1);
     }
 
     // Crear socket para gestión
-    int mgmtSocket = create_server_socket(MGMT_PORT);
+    int mgmtSocket = create_server_socket(args.mng_port);
     if (mgmtSocket < 0) {
         close(socks5Socket);
         mgmt_cleanup_shared_memory();
@@ -197,7 +226,7 @@ int main(int argc, const char* argv[]) {
                 // Proceso hijo
                 close(socks5Socket);
                 close(mgmtSocket);
-                handle_socks5_connection(clientSocket);
+                handle_socks5_connection(clientSocket, &args);
                 exit(0);
             } else if (pid > 0) {
                 // Proceso padre
