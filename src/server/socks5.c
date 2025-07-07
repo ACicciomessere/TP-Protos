@@ -22,20 +22,55 @@
  */
 static ssize_t recvFull(int fd, void* buf, size_t n, int flags) {
     size_t totalReceived = 0;
+    int retries = 0;
+    const int maxRetries = 100; // Prevent infinite loops
 
-    while (totalReceived < n) {
-        ssize_t nowReceived = recv(fd, buf + totalReceived, n - totalReceived, flags);
+    while (totalReceived < n && retries < maxRetries) {
+        ssize_t nowReceived = recv(fd, (char*)buf + totalReceived, n - totalReceived, flags);
+        
         if (nowReceived < 0) {
-            perror("[ERR] recv()");
-            return -1;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Socket would block, wait for data to be ready
+                struct pollfd pfd = {.fd = fd, .events = POLLIN, .revents = 0};
+                int poll_result = poll(&pfd, 1, 5000); // 5 second timeout
+                
+                if (poll_result < 0) {
+                    perror("[ERR] poll() in recvFull");
+                    return -1;
+                } else if (poll_result == 0) {
+                    printf("[ERR] recv() timeout after 5 seconds\n");
+                    return -1;
+                } else if (pfd.revents & POLLIN) {
+                    retries++;
+                    continue; // Try recv again
+                } else {
+                    printf("[ERR] poll() unexpected event: %d\n", pfd.revents);
+                    return -1;
+                }
+            } else {
+                perror("[ERR] recv()");
+                return -1;
+            }
+        } else if (nowReceived == 0) {
+            // Connection closed by peer
+            if (totalReceived == 0) {
+                printf("[ERR] Connection closed by peer before any data received\n");
+                return -1;
+            } else {
+                // Partial data received before close - return what we got
+                printf("[WARN] Connection closed by peer, partial data received: %zu/%zu bytes\n", 
+                       totalReceived, n);
+                return totalReceived;
+            }
+        } else {
+            totalReceived += nowReceived;
+            retries = 0; // Reset retry counter on successful read
         }
+    }
 
-        if (nowReceived == 0) {
-            printf("[ERR] Failed to recv(), client closed connection unexpectedly\n");
-            return -1;
-        }
-
-        totalReceived += nowReceived;
+    if (retries >= maxRetries) {
+        printf("[ERR] recvFull() exceeded maximum retries\n");
+        return -1;
     }
 
     return totalReceived;
@@ -48,20 +83,48 @@ static ssize_t recvFull(int fd, void* buf, size_t n, int flags) {
  */
 static ssize_t sendFull(int fd, const void* buf, size_t n, int flags) {
     size_t totalSent = 0;
+    int retries = 0;
+    const int maxRetries = 100; // Prevent infinite loops
 
-    while (totalSent < n) {
-        ssize_t nowSent = send(fd, buf + totalSent, n - totalSent, flags);
+    while (totalSent < n && retries < maxRetries) {
+        ssize_t nowSent = send(fd, (const char*)buf + totalSent, n - totalSent, flags);
+        
         if (nowSent < 0) {
-            perror("[ERR] send()");
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Socket would block, wait for socket to be ready for writing
+                struct pollfd pfd = {.fd = fd, .events = POLLOUT, .revents = 0};
+                int poll_result = poll(&pfd, 1, 5000); // 5 second timeout
+                
+                if (poll_result < 0) {
+                    perror("[ERR] poll() in sendFull");
+                    return -1;
+                } else if (poll_result == 0) {
+                    printf("[ERR] send() timeout after 5 seconds\n");
+                    return -1;
+                } else if (pfd.revents & POLLOUT) {
+                    retries++;
+                    continue; // Try send again
+                } else {
+                    printf("[ERR] poll() unexpected event: %d\n", pfd.revents);
+                    return -1;
+                }
+            } else {
+                perror("[ERR] send()");
+                return -1;
+            }
+        } else if (nowSent == 0) {
+            // This shouldn't happen with send(), but handle it
+            printf("[ERR] send() returned 0, connection may be closed\n");
             return -1;
+        } else {
+            totalSent += nowSent;
+            retries = 0; // Reset retry counter on successful write
         }
+    }
 
-        if (nowSent == 0) {
-            printf("[ERR] Failed to send(), client closed connection unexpectedly\n");
-            return -1;
-        }
-
-        totalSent += nowSent;
+    if (retries >= maxRetries) {
+        printf("[ERR] sendFull() exceeded maximum retries\n");
+        return -1;
     }
 
     return totalSent;
@@ -516,12 +579,25 @@ int handleConnectionData(int clientSocket, int remoteSocket) {
                 continue;
 
             received = recv(pollFds[i].fd, receiveBuffer, sizeof(receiveBuffer), 0);
-            if (received <= 0) {
+            if (received < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // No data available right now, continue with next socket
+                    continue;
+                } else {
+                    perror("[ERR] recv() in data relay");
+                    alive = 0;
+                }
+            } else if (received == 0) {
+                // Connection closed by peer
+                printf("[INF] Connection closed by peer\n");
                 alive = 0;
             } else {
                 int otherSocket = pollFds[i].fd == clientSocket ? remoteSocket : clientSocket;
-                ssize_t sent = send(otherSocket, receiveBuffer, received, 0);
-                if (sent > 0) {
+                ssize_t sent = sendFull(otherSocket, receiveBuffer, received, 0);
+                if (sent != received) {
+                    printf("[ERR] Failed to send all data: sent %zd/%zd bytes\n", sent, received);
+                    alive = 0;
+                } else {
                     // Actualizar estadísticas con los bytes transferidos
                     mgmt_update_stats(sent, 0);
                 }
