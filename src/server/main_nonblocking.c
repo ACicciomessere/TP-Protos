@@ -30,9 +30,9 @@
 #include <stdbool.h>
 #include <time.h>
 
-#include "selector.h"
-#include "args.h"
-#include "shared/shared.h"
+#include "../selector.h"
+#include "../args.h"
+#include "../shared/shared.h"
 #include "socks5.h"
 
 // Constants
