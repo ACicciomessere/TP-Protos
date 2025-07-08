@@ -18,6 +18,7 @@
 #define CONNECTION_TIMEOUT_MS 10000  // 10 seconds timeout per connection attempt
 #define RETRY_DELAY_MS 100          // 100ms delay between attempts
 
+
 /**
  * Receives a full buffer of data from a socket, by receiving data until the requested amount
  * of bytes is reached. Returns the amount of bytes received, or -1 if receiving failed before
@@ -460,6 +461,26 @@ static int set_blocking(int sock) {
     }
     return fcntl(sock, F_SETFL, flags & ~O_NONBLOCK);
 }
+
+
+int send_socks5_reply(int client_fd, enum socks5_reply code) {
+    uint8_t response[10];
+
+    response[0] = SOCKS_VERSION;   // VER
+    response[1] = code;            // REP
+    response[2] = 0x00;            // RSV
+    response[3] = 0x01;            // ATYP = IPv4 (dummy)
+    response[4] = 0x00;            // BND.ADDR = 0.0.0.0
+    response[5] = 0x00;
+    response[6] = 0x00;
+    response[7] = 0x00;
+    response[8] = 0x00;            // BND.PORT = 0
+    response[9] = 0x00;
+
+    ssize_t n = write(client_fd, response, sizeof(response));
+    return n == sizeof(response) ? 0 : -1;
+}
+
 
  // Intenta conectarse a una direccion especifica con timeout
  // Retorna 1 si la conexion es exitosa, 0 si hay timeout o falla, -1 si hay error
