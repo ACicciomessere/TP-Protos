@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "socks5.h"
 #include "util.h"
@@ -14,6 +15,8 @@
 
 #define READ_BUFFER_SIZE 2048
 #define MAX_HOSTNAME_LENGTH 255
+#define CONNECTION_TIMEOUT_MS 10000  // 10 seconds timeout per connection attempt
+#define RETRY_DELAY_MS 100          // 100ms delay between attempts
 
 /**
  * Receives a full buffer of data from a socket, by receiving data until the requested amount
@@ -84,16 +87,16 @@ static ssize_t recvFull(int fd, void* buf, size_t n, int flags) {
 static ssize_t sendFull(int fd, const void* buf, size_t n, int flags) {
     size_t totalSent = 0;
     int retries = 0;
-    const int maxRetries = 100; // Prevent infinite loops
+    const int maxRetries = 100; // Necesario para prevenir loops infinitos
 
     while (totalSent < n && retries < maxRetries) {
         ssize_t nowSent = send(fd, (const char*)buf + totalSent, n - totalSent, flags);
         
         if (nowSent < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // Socket would block, wait for socket to be ready for writing
+                // El socket se bloquearía, esperamos a que esté listo para escribir
                 struct pollfd pfd = {.fd = fd, .events = POLLOUT, .revents = 0};
-                int poll_result = poll(&pfd, 1, 5000); // 5 second timeout
+                int poll_result = poll(&pfd, 1, 5000); // timeout de 5 segs
                 
                 if (poll_result < 0) {
                     perror("[ERR] poll() in sendFull");
@@ -103,7 +106,7 @@ static ssize_t sendFull(int fd, const void* buf, size_t n, int flags) {
                     return -1;
                 } else if (pfd.revents & POLLOUT) {
                     retries++;
-                    continue; // Try send again
+                    continue; // Reintentamos
                 } else {
                     printf("[ERR] poll() unexpected event: %d\n", pfd.revents);
                     return -1;
@@ -113,12 +116,11 @@ static ssize_t sendFull(int fd, const void* buf, size_t n, int flags) {
                 return -1;
             }
         } else if (nowSent == 0) {
-            // This shouldn't happen with send(), but handle it
             printf("[ERR] send() returned 0, connection may be closed\n");
             return -1;
         } else {
             totalSent += nowSent;
-            retries = 0; // Reset retry counter on successful write
+            retries = 0;
         }
     }
 
@@ -135,7 +137,6 @@ int validateUser(const char* username, const char* password, struct socks5args* 
         return 0;
     }
     
-    // Check against configured users
     for (int i = 0; i < MAX_USERS; i++) {
         if (args->users[i].name && args->users[i].pass) {
             if (strcmp(username, args->users[i].name) == 0 && 
@@ -154,33 +155,29 @@ int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args, char* 
     ssize_t received;
     char receiveBuffer[READ_BUFFER_SIZE + 1];
     
-    // Read the username/password request: VER, ULEN, UNAME, PLEN, PASSWD
     received = recvFull(clientSocket, receiveBuffer, 2, 0);
     if (received < 0) {
         printf("[ERR] Failed to receive username/password auth header\n");
         return -1;
     }
     
-    // Check version (should be 1 for username/password auth)
     if (receiveBuffer[0] != 1) {
         printf("[ERR] Invalid username/password auth version: %d\n", receiveBuffer[0]);
-        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        sendFull(clientSocket, "\x01\x01", 2, 0);
         return -1;
     }
     
-    // Get username length
     int usernameLen = receiveBuffer[1];
     if (usernameLen == 0 || usernameLen > 255) {
         printf("[ERR] Invalid username length: %d\n", usernameLen);
-        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        sendFull(clientSocket, "\x01\x01", 2, 0); 
         return -1;
     }
     
-    // Read username
     received = recvFull(clientSocket, receiveBuffer, usernameLen, 0);
     if (received < 0) {
         printf("[ERR] Failed to receive username\n");
-        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        sendFull(clientSocket, "\x01\x01", 2, 0);
         return -1;
     }
     receiveBuffer[usernameLen] = '\0';
@@ -188,26 +185,24 @@ int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args, char* 
     strncpy(username, receiveBuffer, usernameLen);
     username[usernameLen] = '\0';
     
-    // Read password length
     received = recvFull(clientSocket, receiveBuffer, 1, 0);
     if (received < 0) {
         printf("[ERR] Failed to receive password length\n");
-        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        sendFull(clientSocket, "\x01\x01", 2, 0);
         return -1;
     }
     
     int passwordLen = receiveBuffer[0];
     if (passwordLen == 0 || passwordLen > 255) {
         printf("[ERR] Invalid password length: %d\n", passwordLen);
-        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        sendFull(clientSocket, "\x01\x01", 2, 0); 
         return -1;
     }
     
-    // Read password
     received = recvFull(clientSocket, receiveBuffer, passwordLen, 0);
     if (received < 0) {
         printf("[ERR] Failed to receive password\n");
-        sendFull(clientSocket, "\x01\x01", 2, 0);  // Status: failure
+        sendFull(clientSocket, "\x01\x01", 2, 0);  
         return -1;
     }
     receiveBuffer[passwordLen] = '\0';
@@ -217,22 +212,19 @@ int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args, char* 
     
     printf("[INF] Authentication attempt: username='%s'\n", username);
     
-    // Validate user credentials
     if (validateUser(username, password, args)) {
-        // Store the authenticated username
         if (authenticated_user) {
             strncpy(authenticated_user, username, MAX_USERNAME_LEN - 1);
             authenticated_user[MAX_USERNAME_LEN - 1] = '\0';
         }
         
-        // Send success response
         if (sendFull(clientSocket, "\x01\x00", 2, 0) < 0) {
             printf("[ERR] Failed to send auth success response\n");
             return -1;
         }
         return 0;
     } else {
-        // Send failure response
+        // Fallo
         if (sendFull(clientSocket, "\x01\x01", 2, 0) < 0) {
             printf("[ERR] Failed to send auth failure response\n");
         }
@@ -246,29 +238,28 @@ int handleClient(int clientSocket, struct socks5args* args) {
     if (handleAuthNegotiation(clientSocket, args, authenticated_user))
         return -1;
 
-    // The client can now start sending requests.
+    // Ahora el cliente puede empezar a enviar solicitudes
 
     struct addrinfo* connectAddresses;
     if (handleRequest(clientSocket, &connectAddresses))
         return -1;
 
-    // Now we must conenct to the requested server and reply with success/error code.
+     // Ahora nos podemos conectar al servidor solicitado
 
     int remoteSocket = -1;
     if (handleConnectAndReply(clientSocket, &connectAddresses, &remoteSocket))
         return -1;
 
-    // The connection has been established! Now the client and requested server can talk to each other.
-    // If we have an authenticated user, update their connection stats
+        // Se establece la conexion, a partir de aca el cliente y el server pueden comunicarse
+        // Si tenemos un usuario autenticado, ademas tenemos q actualizar sus estadisticas de conexion
     if (authenticated_user[0] != '\0') {
-        mgmt_update_user_stats(authenticated_user, 0, 1); // New connection
+        mgmt_update_user_stats(authenticated_user, 0, 1); 
     }
 
     int status = handleConnectionData(clientSocket, remoteSocket, authenticated_user);
     
-    // Update connection end stats
     if (authenticated_user[0] != '\0') {
-        mgmt_update_user_stats(authenticated_user, 0, -1); // Connection ended
+        mgmt_update_user_stats(authenticated_user, 0, -1); 
     }
     
     close(remoteSocket);
@@ -279,24 +270,20 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authe
     ssize_t received;
     char receiveBuffer[READ_BUFFER_SIZE + 1];
 
-    // Socks5 starts with the client sending VER, NMETHODS, followed by that amount of METHODS. Let's read VER and NMETHODS.
     received = recvFull(clientSocket, receiveBuffer, 2, 0);
     if (received < 0)
         return -1;
 
-    // Check that version is 5
     if (receiveBuffer[0] != 5) {
         printf("[ERR] Client specified invalid version: %d\n", receiveBuffer[0]);
         return -1;
     }
 
-    // Read NMETHODS methods.
     int nmethods = receiveBuffer[1];
     received = recvFull(clientSocket, receiveBuffer, nmethods, 0);
     if (received < 0)
         return -1;
 
-    // Check what authentication methods the client supports
     int hasNoAuth = 0;
     int hasUserPass = 0;
     int hasUsersConfigured = 0;
@@ -311,7 +298,7 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authe
         printf("%02x%s", receiveBuffer[i], i + 1 == nmethods ? "\n" : ", ");
     }
     
-    // Check if we have any users configured
+    // Chequeamos si tenemos usuarios configurados
     if (args) {
         for (int i = 0; i < MAX_USERS; i++) {
             if (args->users[i].name && args->users[i].pass) {
@@ -321,40 +308,34 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authe
         }
     }
     
-    // Determine which authentication method to use
     if (hasUsersConfigured) {
-        // Users are configured, require username/password authentication
+        // Los usuarios estan configurados, requerimos autenticacion por nombre de usuario y contraseña
         if (hasUserPass) {
             printf("[INF] Using username/password authentication (required)\n");
             if (sendFull(clientSocket, "\x05\x02", 2, 0) < 0)
                 return -1;
                 
-            // Perform username/password authentication
             return handleUsernamePasswordAuth(clientSocket, args, authenticated_user);
         } else {
-            // Users are configured but client doesn't support username/password auth
             printf("[ERR] Authentication required but client doesn't support username/password!\n");
             if (sendFull(clientSocket, "\x05\xFF", 2, 0) < 0)
                 return -1;
 
-            // Wait for the client to close the TCP connection.
             printf("[INF] Waiting for client to close the connection.\n");
             while (recv(clientSocket, receiveBuffer, READ_BUFFER_SIZE, 0) > 0) {}
             return -1;
         }
     } else if (hasNoAuth) {
-        // No users configured, allow no authentication
+        // Si no tenemos usuarios configurados, no permitimos auth
         printf("[INF] Using no authentication (no users configured)\n");
         if (sendFull(clientSocket, "\x05\x00", 2, 0) < 0)
             return -1;
         return 0;
     } else {
-        // No acceptable authentication method found
         printf("[ERR] No acceptable authentication method found!\n");
         if (sendFull(clientSocket, "\x05\xFF", 2, 0) < 0)
             return -1;
 
-        // Wait for the client to close the TCP connection.
         printf("[INF] Waiting for client to close the connection.\n");
         while (recv(clientSocket, receiveBuffer, READ_BUFFER_SIZE, 0) > 0) {}
         return -1;
@@ -365,115 +346,98 @@ int handleRequest(int clientSocket, struct addrinfo** connectAddresses) {
     ssize_t received;
     char receiveBuffer[READ_BUFFER_SIZE + 1];
 
-    // Read from a client request: VER, CMD, RSV, ATYP.
     received = recvFull(clientSocket, receiveBuffer, 4, 0);
     if (received < 0)
         return -1;
 
-    // Check that the CMD the client specified is X'01' "connect". Otherwise, send and error and close the TCP connection.
     if (receiveBuffer[1] != 1) {
-        // The reply specified REP as X'07' "Command not supported", ATYP as IPv4 and BND as 0.0.0.0:0.
         sendFull(clientSocket, "\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00", 10, 0);
         return -1;
     }
 
-    // We will store the hostname and port in these variables. If the client asked to connect to an IP, we
-    // will print it into hostname and then pass it throught getaddrinfo().
-    // Is this the best option? Definitely not, but it's kinda easier ;)
     char hostname[MAX_HOSTNAME_LENGTH + 1];
     int port = 0;
 
-    // The hints for getaddrinfo. We will specify we want a stream TCP socket.
     struct addrinfo addrHints;
     memset(&addrHints, 0, sizeof(addrHints));
     addrHints.ai_socktype = SOCK_STREAM;
     addrHints.ai_protocol = IPPROTO_TCP;
 
-    // Check ATYP and print the address/hostname the client asked to connect to.
     if (receiveBuffer[3] == 1) {
-        // Client requested to connect to an IPv4 address.
+        // El cliente solicita conectarse a un dir. IPV4
         addrHints.ai_family = AF_INET;
 
-        // Read the IPv4 address (4 bytes).
+        // Leemos la IP
         struct in_addr addr;
         received = recvFull(clientSocket, &addr, 4, 0);
         if (received < 0)
             return -1;
 
-        // Read the port number (2 bytes).
+        // Leemos el nro de puerto
         in_port_t portBuf;
         received = recvFull(clientSocket, &portBuf, 2, 0);
         if (received < 0)
             return -1;
 
-        // Store the port and convert the IP to a hostname string.
+        // Nos guardamos el puerto y a la IP la pasamos a string
         port = ntohs(portBuf);
         inet_ntop(AF_INET, &addr, hostname, INET_ADDRSTRLEN);
     } else if (receiveBuffer[3] == 3) {
-        // Client requested to connect to a domain name.
-        // Read one byte, the length of the domain name string.
+        // El cliente pide conectarse a un dominio
         received = recvFull(clientSocket, receiveBuffer, 1, 0);
         if (received < 0)
             return -1;
 
-        // Read the domain name string into the 'hostname' buffer.
         int hostnameLength = receiveBuffer[0];
         received = recvFull(clientSocket, hostname, hostnameLength, 0);
         if (received < 0)
             return -1;
 
-        // Read the port number.
         in_port_t portBuffer;
         received = recvFull(clientSocket, &portBuffer, 2, 0);
         if (received < 0)
             return -1;
 
-        // Store the port number and hostname.
         port = ntohs(portBuffer);
         hostname[hostnameLength] = '\0';
     } else if (receiveBuffer[3] == 4) {
-        // Client requested to connect to an IPv6 address.
+        // El cliente solicito conectarse a un dir. IPV6
         addrHints.ai_family = AF_INET6;
 
-        // Read the IPv6 address (16 bytes).
+        // Leemos la IP
         struct in6_addr addr;
         received = recvFull(clientSocket, &addr, 16, 0);
         if (received < 0)
             return -1;
 
-        // Read the port number (2 bytes).
+        // Leemos el nro de puerto
         in_port_t portBuf;
         received = recvFull(clientSocket, &portBuf, 2, 0);
         if (received < 0)
             return -1;
 
-        // Store the port and convert the IP to a hostname string.
+        // Nos guardamos el puerto y a la IP la pasamos a string
         port = ntohs(portBuf);
         inet_ntop(AF_INET6, &addr, hostname, INET6_ADDRSTRLEN);
     } else {
-        // The reply specified REP as X'08' "Address type not supported", ATYP as IPv4 and BND as 0.0.0.0:0.
         sendFull(clientSocket, "\x05\x08\x00\x01\x00\x00\x00\x00\x00\x00", 10, 0);
         return -1;
     }
 
     printf("[INF] Client asked to connect to: %s:%d\n", hostname, port);
 
-    // For "service", we will indicate the port number
     char service[6] = {0};
     sprintf(service, "%d", port);
 
-    // Call getaddrinfo to get the prepared addrinfo structures to connect to.
     int getAddrStatus = getaddrinfo(hostname, service, &addrHints, connectAddresses);
     if (getAddrStatus != 0) {
         printf("[ERR] getaddrinfo() failed: %s\n", gai_strerror(getAddrStatus));
 
-        // The reply specifies ATYP as IPv4 and BND as 0.0.0.0:0.
         char errorMessage[10] = "\x05 \x00\x01\x00\x00\x00\x00\x00\x00";
-        // We calculate the REP value based on the type of error returned by getaddrinfo
         errorMessage[1] =
-            getAddrStatus == EAI_FAMILY   ? '\x08'  // REP is "Address type not supported"
-            : getAddrStatus == EAI_NONAME ? '\x04'  // REP is "Host Unreachable"
-                                          : '\x01'; // REP is "General SOCKS server failure"
+            getAddrStatus == EAI_FAMILY   ? '\x08'  
+            : getAddrStatus == EAI_NONAME ? '\x04' 
+                                          : '\x01'; 
         sendFull(clientSocket, errorMessage, 10, 0);
         return -1;
     }
@@ -481,34 +445,181 @@ int handleRequest(int clientSocket, struct addrinfo** connectAddresses) {
     return 0;
 }
 
+static int set_nonblocking(int sock) {
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags == -1) {
+        return -1;
+    }
+    return fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+}
+
+static int set_blocking(int sock) {
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags == -1) {
+        return -1;
+    }
+    return fcntl(sock, F_SETFL, flags & ~O_NONBLOCK);
+}
+
+ // Intenta conectarse a una direccion especifica con timeout
+ // Retorna 1 si la conexion es exitosa, 0 si hay timeout o falla, -1 si hay error
+static int connect_with_timeout(int sock, const struct sockaddr* addr, socklen_t addrlen, int timeout_ms) {
+    // Setea socket a non-blocking
+    if (set_nonblocking(sock) < 0) {
+        return -1;
+    }
+    
+    // Intenta conectar
+    int result = connect(sock, addr, addrlen);
+    if (result == 0) {
+        // Conexion exitosa
+        set_blocking(sock); 
+        return 1;
+    }
+    
+    if (errno != EINPROGRESS) {
+        // Fallo la conexion
+        return 0;
+    }
+    
+    // La conexion esta en progreso, esperamos a que termine
+    struct pollfd pfd = {
+        .fd = sock,
+        .events = POLLOUT,
+        .revents = 0
+    };
+    
+    int poll_result = poll(&pfd, 1, timeout_ms);
+    if (poll_result < 0) {
+        return -1;  // error
+    } else if (poll_result == 0) {
+        return 0;   // timeout
+    }
+    
+    // Chequeamos si la conexion fue exitosa
+    int error = 0;
+    socklen_t error_len = sizeof(error);
+    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &error_len) < 0) {
+        return -1;
+    }
+    
+    if (error == 0) {
+        // Conexion exitosa
+        set_blocking(sock); 
+        return 1;
+    } else {
+        // Fallo la conexion
+        errno = error;
+        return 0;
+    }
+}
+
 int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, int* remoteSocket) {
     char addrBuf[64];
     int aipIndex = 0;
+    int total_addresses = 0;
+    int ipv4_count = 0, ipv6_count = 0;
 
-    // Print all the addrinfo options, just for debugging.
+    // Contamos las direcciones y imprimimos todas las opciones de addrinfo
     for (struct addrinfo* aip = *connectAddresses; aip != NULL; aip = aip->ai_next) {
         printf("[INF] Option %i: %s (%s %s) %s %s (Flags: ", aipIndex++, printFamily(aip), printType(aip), printProtocol(aip), aip->ai_canonname ? aip->ai_canonname : "-", printAddressPort(aip, addrBuf));
         printFlags(aip);
         printf(")\n");
+        total_addresses++;
+        if (aip->ai_family == AF_INET) ipv4_count++;
+        else if (aip->ai_family == AF_INET6) ipv6_count++;
     }
+    
+    printf("[INF] Attempting to connect to %d addresses (%d IPv4, %d IPv6)\n", 
+           total_addresses, ipv4_count, ipv6_count);
 
-    // Find the first addrinfo option in which we can both open a socket, and connect to the remote server.
+    // Primero intentamos IPv6, luego IPv4
     int sock = -1;
     char addrBuffer[128];
+    int attempt = 0;
+    int last_errno = 0;
+    const char* last_error_type = "unknown";
+    
+    // Intentamos IPv6
     for (struct addrinfo* addr = *connectAddresses; addr != NULL && sock == -1; addr = addr->ai_next) {
+        if (addr->ai_family != AF_INET6) continue;
+        
+        attempt++;
+        printf("[INF] Attempt %d/%d: Trying IPv6 %s\n", attempt, total_addresses, printAddressPort(addr, addrBuffer));
+        
         sock = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
         if (sock < 0) {
-            printf("[INF] Failed to create remote socket on %s\n", printAddressPort(addr, addrBuffer));
+            printf("[INF] Failed to create socket for %s: %s\n", printAddressPort(addr, addrBuffer), strerror(errno));
+            last_errno = errno;
+            last_error_type = "socket creation";
+            continue;
+        }
+        
+        int connect_result = connect_with_timeout(sock, addr->ai_addr, addr->ai_addrlen, CONNECTION_TIMEOUT_MS);
+        if (connect_result == 1) {
+            printf("[INF] Successfully connected to: %s (%s %s) %s %s (Flags: ", printFamily(addr), printType(addr), printProtocol(addr), addr->ai_canonname ? addr->ai_canonname : "-", printAddressPort(addr, addrBuf));
+            printFlags(addr);
+            printf(")\n");
+            break;  // Exitoso
         } else {
-            errno = 0;
-            if (connect(sock, addr->ai_addr, addr->ai_addrlen) != 0) {
-                printf("[INF] Failed to connect() remote socket to %s: %s\n", printAddressPort(addr, addrBuffer), strerror(errno));
-                close(sock);
-                sock = -1;
+            last_errno = errno;
+            if (connect_result == 0) {
+                printf("[INF] Connection to %s timed out after %dms\n", printAddressPort(addr, addrBuffer), CONNECTION_TIMEOUT_MS);
+                last_error_type = "timeout";
             } else {
+                printf("[INF] Connection to %s failed: %s\n", printAddressPort(addr, addrBuffer), strerror(errno));
+                last_error_type = "connection failed";
+            }
+            close(sock);
+            sock = -1;
+            
+            // Esperamos un poco antes de intentar nuevamente
+            if (RETRY_DELAY_MS > 0) {
+                struct timespec delay = {0, RETRY_DELAY_MS * 1000000};  // Convertimos ms a ns
+                nanosleep(&delay, NULL);
+            }
+        }
+    }
+    
+    // Intentamos IPv4
+    if (sock == -1) {
+        for (struct addrinfo* addr = *connectAddresses; addr != NULL && sock == -1; addr = addr->ai_next) {
+            if (addr->ai_family != AF_INET) continue;
+            
+            attempt++;
+            printf("[INF] Attempt %d/%d: Trying IPv4 %s\n", attempt, total_addresses, printAddressPort(addr, addrBuffer));
+            
+            sock = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
+            if (sock < 0) {
+                printf("[INF] Failed to create socket for %s: %s\n", printAddressPort(addr, addrBuffer), strerror(errno));
+                last_errno = errno;
+                last_error_type = "socket creation";
+                continue;
+            }
+            
+            int connect_result = connect_with_timeout(sock, addr->ai_addr, addr->ai_addrlen, CONNECTION_TIMEOUT_MS);
+            if (connect_result == 1) {
                 printf("[INF] Successfully connected to: %s (%s %s) %s %s (Flags: ", printFamily(addr), printType(addr), printProtocol(addr), addr->ai_canonname ? addr->ai_canonname : "-", printAddressPort(addr, addrBuf));
                 printFlags(addr);
                 printf(")\n");
+                break;  // Exitoso
+            } else {
+                last_errno = errno;
+                if (connect_result == 0) {
+                    printf("[INF] Connection to %s timed out after %dms\n", printAddressPort(addr, addrBuffer), CONNECTION_TIMEOUT_MS);
+                    last_error_type = "timeout";
+                } else {
+                    printf("[INF] Connection to %s failed: %s\n", printAddressPort(addr, addrBuffer), strerror(errno));
+                    last_error_type = "connection failed";
+                }
+                close(sock);
+                sock = -1;
+                
+                // Esperamos un poco antes de intentar nuevamente
+                if (RETRY_DELAY_MS > 0) {
+                    struct timespec delay = {0, RETRY_DELAY_MS * 1000000};
+                    nanosleep(&delay, NULL);
+                }
             }
         }
     }
@@ -516,15 +627,26 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
     freeaddrinfo(*connectAddresses);
 
     if (sock == -1) {
-        printf("[ERR] Failed to connect to any of the available options.\n");
-        // The reply specified REP as X'05' "Connection refused", ATYP as IPv4 and BND as 0.0.0.0:0.
-        sendFull(clientSocket, "\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00", 10, 0);
+        printf("[ERR] Failed to connect to any of the %d available addresses. Last error: %s (%s)\n", 
+               total_addresses, last_error_type, strerror(last_errno));
+        
+        // Reporte de errores mejorado basado en el tipo de falla
+        char socks_error = '\x05';  // Default: Connection refused
+        if (strcmp(last_error_type, "timeout") == 0) {
+            socks_error = '\x04';  // Host unreachable (timeout sugiere problema de red)
+        } else if (strcmp(last_error_type, "socket creation") == 0) {
+            socks_error = '\x01';  // General SOCKS server failure
+        }
+        
+        char errorMessage[10] = "\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00";
+        errorMessage[1] = socks_error;
+        sendFull(clientSocket, errorMessage, 10, 0);
         return -1;
     }
 
     *remoteSocket = sock;
 
-    // Get and print the address and port at which our socket got bound.
+    // Obtenemos y mostramos la direccion y puerto en el que nuestro socket se enlazo
     struct sockaddr_storage boundAddress;
     socklen_t boundAddressLen = sizeof(boundAddress);
     if (getsockname(sock, (struct sockaddr*)&boundAddress, &boundAddressLen) >= 0) {
@@ -533,7 +655,7 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
     } else
         perror("[WRN] Failed to getsockname() for remote socket");
 
-    // Send a server reply: SUCCESS, then send the address to which our socket is bound.
+    // Enviamos una respuesta al cliente: SUCCESS, luego enviamos la direccion a la que nuestro socket se enlazo
     if (sendFull(clientSocket, "\x05\x00\x00", 3, 0) < 0)
         return -1;
 
@@ -572,7 +694,7 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
     ssize_t received;
     char receiveBuffer[4096];
 
-    // Create poll structures to say we are waiting for bytes to read on both sockets.
+    // Creamos estructuras de poll para decir que estamos esperando bytes para leer en ambos sockets
     struct pollfd pollFds[2];
     pollFds[0].fd = clientSocket;
     pollFds[0].events = POLLIN;
@@ -581,8 +703,8 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
     pollFds[1].events = POLLIN;
     pollFds[1].revents = 0;
 
-    // What comes in through clientSocket, we send to remoteSocket. What comes in through remoteSocket, we send to clientSocket.
-    // This gets repeated until either the client or remote server closes the connection, at which point we close both connections.
+    // Lo que viene por clientSocket, lo enviamos a remoteSocket. Lo que viene por remoteSocket, lo enviamos a clientSocket.
+    // Esto se repite hasta que el cliente o el servidor remoto cierren la conexion, en cuyo caso cerramos ambas conexiones.
     int alive = 1;
     do {
         int pollResult = poll(pollFds, 2, -1);
