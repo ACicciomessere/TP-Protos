@@ -23,7 +23,7 @@ void show_help(const char* program) {
     printf("\n");
 }
 
-void show_version() {
+void show_version(void) {
     printf("SOCKS5 Proxy Client v1.0\n");
     printf("ITBA Protocolos de Comunicación 2025-1C\n");
 }
@@ -104,7 +104,7 @@ void delete_user(const char* user) {
     mgmt_close_connection(sock);
 }
 
-void list_users() {
+void list_users(void) {
     // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
@@ -143,7 +143,7 @@ void list_users() {
     mgmt_close_connection(sock);
 }
 
-void show_stats() {
+void show_stats(void) {
     // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
