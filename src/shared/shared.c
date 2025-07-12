@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include "../logger.h"
 
 // Puntero a datos compartidos
 static shared_data_t* g_shared_data = NULL;
@@ -41,6 +42,8 @@ int mgmt_init_shared_memory(void) {
     pthread_mutex_init(&g_shared_data->stats_mutex, &attr);
     
     pthread_mutexattr_destroy(&attr);
+    // Inicializar logger
+    logger_init("metrics.log");
     
     printf("[INF] Shared memory initialized\n");
     return 0;
@@ -54,6 +57,8 @@ void mgmt_cleanup_shared_memory(void) {
         munmap(g_shared_data, sizeof(shared_data_t));
         g_shared_data = NULL;
     }
+    // Cerrar logger
+    logger_close();
 }
 
 // Obtener puntero a datos compartidos
@@ -170,6 +175,12 @@ void mgmt_update_stats(uint64_t bytes_transferred, int connection_change) {
     
     g_shared_data->stats.total_bytes_transferred += bytes_transferred;
     g_shared_data->stats.current_bytes_transferred += bytes_transferred;
+    // Loggear la actualización de métricas globales
+    logger_log("Stats globales actualizadas: bytes=%llu cambio_conexiones=%d total_conexiones=%llu conexiones_activas=%llu bytes_totales=%llu", 
+               bytes_transferred, connection_change, 
+               (unsigned long long)g_shared_data->stats.total_connections, 
+               (unsigned long long)g_shared_data->stats.current_connections, 
+               (unsigned long long)g_shared_data->stats.total_bytes_transferred);
     
     pthread_mutex_unlock(&g_shared_data->stats_mutex);
 }
@@ -211,6 +222,12 @@ void mgmt_update_user_stats(const char* username, uint64_t bytes_transferred, in
     
     user_stats->total_bytes_transferred += bytes_transferred;
     user_stats->current_bytes_transferred += bytes_transferred;
+    // Loggear la actualización de métricas por usuario
+    logger_log("Stats usuario '%s' actualizadas: bytes=%llu cambio_conexiones=%d total_conexiones=%llu conexiones_activas=%llu bytes_totales=%llu", 
+               username, bytes_transferred, connection_change, 
+               (unsigned long long)user_stats->total_connections, 
+               (unsigned long long)user_stats->current_connections, 
+               (unsigned long long)user_stats->total_bytes_transferred);
     
     pthread_mutex_unlock(&g_shared_data->users_mutex);
     
