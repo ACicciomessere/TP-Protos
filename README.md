@@ -16,7 +16,7 @@
 
 ### CURL:
 ```bash
-        $ curl --socks5 127.0.0.1:1080 --proxy-user usuario:clave http://example.com
+        $ curl --socks5 127.0.0.1:1080 --proxy-user usuario:clave https://google.com
 ```
 
 ### NCAT:
