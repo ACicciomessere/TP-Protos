@@ -9,31 +9,31 @@
 #include <sys/mman.h>
 #include "../logger.h"
 
-// Puntero a datos compartidos
+// Pointer to shared data
 static shared_data_t* g_shared_data = NULL;
 
 void sayHello(void) {
-    printf("Hello!\n");
+    log_info("Hello!");
 }
 
-// Inicializar memoria compartida
+// Initialize shared memory
 int mgmt_init_shared_memory(void) {
-    // Crear memoria compartida usando mmap
+    // Create shared memory using mmap
     g_shared_data = mmap(NULL, sizeof(shared_data_t), PROT_READ | PROT_WRITE, 
                          MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     
     if (g_shared_data == MAP_FAILED) {
-        perror("Error creating shared memory");
+        log_fatal("Error creating shared memory: %s", strerror(errno));
         return -1;
     }
     
-    // Inicializar la estructura
+    // Initialize the structure
     memset(g_shared_data, 0, sizeof(shared_data_t));
     
-    // Inicializar tiempo de inicio del servidor
+    // Initialize server start time
     g_shared_data->stats.server_start_time = time(NULL);
     
-    // Configurar los mutex como compartidos entre procesos
+    // Configure mutexes to be shared between processes
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
@@ -42,31 +42,28 @@ int mgmt_init_shared_memory(void) {
     pthread_mutex_init(&g_shared_data->stats_mutex, &attr);
     
     pthread_mutexattr_destroy(&attr);
-    // Inicializar logger
-    logger_init("metrics.log");
     
-    printf("[INF] Shared memory initialized\n");
+    log_info("Shared memory initialized");
     return 0;
 }
 
-// Limpiar memoria compartida
+// Cleanup shared memory
 void mgmt_cleanup_shared_memory(void) {
     if (g_shared_data != NULL) {
         pthread_mutex_destroy(&g_shared_data->users_mutex);
         pthread_mutex_destroy(&g_shared_data->stats_mutex);
         munmap(g_shared_data, sizeof(shared_data_t));
         g_shared_data = NULL;
+        log_info("Shared memory cleaned up");
     }
-    // Cerrar logger
-    logger_close();
 }
 
-// Obtener puntero a datos compartidos
+// Get pointer to shared data
 shared_data_t* mgmt_get_shared_data(void) {
     return g_shared_data;
 }
 
-// Función para buscar un usuario
+// Function to find a user
 static int find_user(const char* username) {
     for (int i = 0; i < g_shared_data->user_count; i++) {
         if (g_shared_data->users[i].active && strcmp(g_shared_data->users[i].username, username) == 0) {
@@ -76,17 +73,17 @@ static int find_user(const char* username) {
     return -1;
 }
 
-// Función para agregar un usuario
+// Function to add a user
 static int add_user(const char* username, const char* password) {
     pthread_mutex_lock(&g_shared_data->users_mutex);
     
-    // Verificar si el usuario ya existe
+    // Check if the user already exists
     if (find_user(username) != -1) {
         pthread_mutex_unlock(&g_shared_data->users_mutex);
-        return -1; // Usuario ya existe
+        return -1; // User already exists
     }
     
-    // Buscar slot libre
+    // Find a free slot
     int slot = -1;
     for (int i = 0; i < MAX_USERS; i++) {
         if (!g_shared_data->users[i].active) {
@@ -97,10 +94,10 @@ static int add_user(const char* username, const char* password) {
     
     if (slot == -1) {
         pthread_mutex_unlock(&g_shared_data->users_mutex);
-        return -2; // No hay espacio
+        return -2; // No space available
     }
     
-    // Agregar usuario
+    // Add user
     strncpy(g_shared_data->users[slot].username, username, MAX_USERNAME_LEN - 1);
     strncpy(g_shared_data->users[slot].password, password, MAX_PASSWORD_LEN - 1);
     g_shared_data->users[slot].username[MAX_USERNAME_LEN - 1] = '\0';
@@ -115,14 +112,14 @@ static int add_user(const char* username, const char* password) {
     return 0;
 }
 
-// Función para eliminar un usuario
+// Function to delete a user
 static int delete_user(const char* username) {
     pthread_mutex_lock(&g_shared_data->users_mutex);
     
     int index = find_user(username);
     if (index == -1) {
         pthread_mutex_unlock(&g_shared_data->users_mutex);
-        return -1; // Usuario no encontrado
+        return -1; // User not found
     }
     
     g_shared_data->users[index].active = 0;
@@ -132,7 +129,7 @@ static int delete_user(const char* username) {
     return 0;
 }
 
-// Función para obtener lista de usuarios
+// Function to get a list of users
 static int get_users(user_t* user_list, int max_users) {
     pthread_mutex_lock(&g_shared_data->users_mutex);
     
@@ -148,14 +145,14 @@ static int get_users(user_t* user_list, int max_users) {
     return count;
 }
 
-// Función para obtener estadísticas
+// Function to get stats
 static void get_stats(stats_t* stats) {
     pthread_mutex_lock(&g_shared_data->stats_mutex);
     memcpy(stats, &g_shared_data->stats, sizeof(stats_t));
     pthread_mutex_unlock(&g_shared_data->stats_mutex);
 }
 
-// Función para actualizar estadísticas globales
+// Function to update global stats
 void mgmt_update_stats(uint64_t bytes_transferred, int connection_change) {
     if (g_shared_data == NULL) return;
     
@@ -165,7 +162,7 @@ void mgmt_update_stats(uint64_t bytes_transferred, int connection_change) {
         g_shared_data->stats.total_connections++;
         g_shared_data->stats.current_connections++;
         
-        // Actualizar pico de conexiones concurrentes
+        // Update peak concurrent connections
         if (g_shared_data->stats.current_connections > g_shared_data->stats.peak_concurrent_connections) {
             g_shared_data->stats.peak_concurrent_connections = g_shared_data->stats.current_connections;
         }
@@ -175,9 +172,9 @@ void mgmt_update_stats(uint64_t bytes_transferred, int connection_change) {
     
     g_shared_data->stats.total_bytes_transferred += bytes_transferred;
     g_shared_data->stats.current_bytes_transferred += bytes_transferred;
-    // Loggear la actualización de métricas globales
-    logger_log("Stats globales actualizadas: bytes=%llu cambio_conexiones=%d total_conexiones=%llu conexiones_activas=%llu bytes_totales=%llu", 
-               bytes_transferred, connection_change, 
+    // Log the update of global metrics
+    log_debug("Global stats updated: bytes=%llu conn_change=%d total_conn=%llu active_conn=%llu total_bytes=%llu", 
+               (unsigned long long)bytes_transferred, connection_change, 
                (unsigned long long)g_shared_data->stats.total_connections, 
                (unsigned long long)g_shared_data->stats.current_connections, 
                (unsigned long long)g_shared_data->stats.total_bytes_transferred);
@@ -185,17 +182,17 @@ void mgmt_update_stats(uint64_t bytes_transferred, int connection_change) {
     pthread_mutex_unlock(&g_shared_data->stats_mutex);
 }
 
-// Función para actualizar estadísticas por usuario
+// Function to update per-user stats
 void mgmt_update_user_stats(const char* username, uint64_t bytes_transferred, int connection_change) {
     if (g_shared_data == NULL || username == NULL) return;
     
     pthread_mutex_lock(&g_shared_data->users_mutex);
     
-    // Buscar el usuario
+    // Find the user
     int user_index = find_user(username);
     if (user_index == -1) {
         pthread_mutex_unlock(&g_shared_data->users_mutex);
-        return; // Usuario no encontrado
+        return; // User not found
     }
     
     user_stats_t* user_stats = &g_shared_data->users[user_index].stats;
@@ -206,14 +203,14 @@ void mgmt_update_user_stats(const char* username, uint64_t bytes_transferred, in
         user_stats->current_connections++;
         user_stats->last_connection_time = current_time;
         
-        // Si es la primera conexión, establecer tiempo de primera conexión
+        // If it's the first connection, set the first connection time
         if (user_stats->first_connection_time == 0) {
             user_stats->first_connection_time = current_time;
         }
     } else if (connection_change < 0) {
         user_stats->current_connections--;
         
-        // Calcular tiempo de conexión y agregarlo al total
+        // Calculate connection time and add it to the total
         if (user_stats->last_connection_time > 0) {
             uint64_t connection_duration = current_time - user_stats->last_connection_time;
             user_stats->total_connection_time += connection_duration;
@@ -222,35 +219,40 @@ void mgmt_update_user_stats(const char* username, uint64_t bytes_transferred, in
     
     user_stats->total_bytes_transferred += bytes_transferred;
     user_stats->current_bytes_transferred += bytes_transferred;
-    // Loggear la actualización de métricas por usuario
-    logger_log("Stats usuario '%s' actualizadas: bytes=%llu cambio_conexiones=%d total_conexiones=%llu conexiones_activas=%llu bytes_totales=%llu", 
-               username, bytes_transferred, connection_change, 
+    // Log the update of per-user metrics
+    log_debug("User stats for '%s' updated: bytes=%llu conn_change=%d total_conn=%llu active_conn=%llu total_bytes=%llu", 
+               username, (unsigned long long)bytes_transferred, connection_change, 
                (unsigned long long)user_stats->total_connections, 
                (unsigned long long)user_stats->current_connections, 
                (unsigned long long)user_stats->total_bytes_transferred);
     
     pthread_mutex_unlock(&g_shared_data->users_mutex);
     
-    // También actualizar estadísticas globales
+    // Also update global stats
     mgmt_update_stats(bytes_transferred, connection_change);
 }
 
-// Manejar cliente de gestión con protocolo optimizado
+// Handle management client with optimized protocol
 int mgmt_handle_client(int client_sock) {
     if (g_shared_data == NULL) {
-        printf("[ERR] Shared memory not initialized\n");
+        log_error("Shared memory not initialized");
         return -1;
     }
     
     mgmt_message_t msg;
     
-    // Recibir mensaje
+    // Receive message
     ssize_t bytes_received = recv(client_sock, &msg, sizeof(msg), 0);
     if (bytes_received <= 0) {
+        if (bytes_received < 0) {
+            log_warn("recv from mgmt client failed: %s", strerror(errno));
+        } else {
+            log_info("Management client disconnected");
+        }
         return -1;
     }
     
-    // Procesar comando con estructuras optimizadas
+    // Process command with optimized structures
     switch (msg.command) {
         case CMD_ADD_USER:
             {
@@ -260,13 +262,13 @@ int mgmt_handle_client(int client_sock) {
                 int result = add_user(msg.username, msg.password);
                 if (result == 0) {
                     response.success = 1;
-                    snprintf(response.message, sizeof(response.message), "Usuario %s agregado exitosamente", msg.username);
+                    snprintf(response.message, sizeof(response.message), "User %s added successfully", msg.username);
                 } else if (result == -1) {
                     response.success = 0;
-                    snprintf(response.message, sizeof(response.message), "Error: El usuario %s ya existe", msg.username);
+                    snprintf(response.message, sizeof(response.message), "Error: User %s already exists", msg.username);
                 } else {
                     response.success = 0;
-                    snprintf(response.message, sizeof(response.message), "Error: No hay espacio para más usuarios");
+                    snprintf(response.message, sizeof(response.message), "Error: No space for more users");
                 }
                 
                 return mgmt_send_simple_response(client_sock, &response);
@@ -280,10 +282,10 @@ int mgmt_handle_client(int client_sock) {
                 int result = delete_user(msg.username);
                 if (result == 0) {
                     response.success = 1;
-                    snprintf(response.message, sizeof(response.message), "Usuario %s eliminado exitosamente", msg.username);
+                    snprintf(response.message, sizeof(response.message), "User %s deleted successfully", msg.username);
                 } else {
                     response.success = 0;
-                    snprintf(response.message, sizeof(response.message), "Error: Usuario %s no encontrado", msg.username);
+                    snprintf(response.message, sizeof(response.message), "Error: User %s not found", msg.username);
                 }
                 
                 return mgmt_send_simple_response(client_sock, &response);
@@ -296,7 +298,7 @@ int mgmt_handle_client(int client_sock) {
                 
                 response.user_count = get_users(response.users, MAX_USERS);
                 response.success = 1;
-                snprintf(response.message, sizeof(response.message), "Lista de usuarios obtenida (%d usuarios)", response.user_count);
+                snprintf(response.message, sizeof(response.message), "User list obtained (%d users)", response.user_count);
                 
                 return mgmt_send_users_response(client_sock, &response);
             }
@@ -307,7 +309,7 @@ int mgmt_handle_client(int client_sock) {
                 memset(&response, 0, sizeof(response));
                 
                 get_stats(&response.stats);
-                // Solo enviar el número de usuarios configurados, no los datos específicos
+                // Only send the number of configured users, not specific data
                 pthread_mutex_lock(&g_shared_data->users_mutex);
                 int active_users = 0;
                 for (int i = 0; i < g_shared_data->user_count; i++) {
@@ -319,7 +321,7 @@ int mgmt_handle_client(int client_sock) {
                 
                 response.user_count = active_users;
                 response.success = 1;
-                snprintf(response.message, sizeof(response.message), "Estadísticas generales obtenidas (%d usuarios configurados)", active_users);
+                snprintf(response.message, sizeof(response.message), "General stats obtained (%d configured users)", active_users);
                 
                 return mgmt_send_stats_response(client_sock, &response);
             }
@@ -330,47 +332,41 @@ int mgmt_handle_client(int client_sock) {
                 memset(&response, 0, sizeof(response));
                 
                 response.success = 0;
-                snprintf(response.message, sizeof(response.message), "Comando no reconocido");
+                snprintf(response.message, sizeof(response.message), "Command not recognized");
                 
                 return mgmt_send_simple_response(client_sock, &response);
             }
     }
 }
 
-// Conectar al servidor de gestión
+// Connect to management server
 int mgmt_connect_to_server(void) {
-    int sock;
-    struct sockaddr_in server_addr;
-    
-    // Crear socket
-    sock = socket(AF_INET, SOCK_STREAM, 0);
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        perror("Error creating socket");
+        log_error("socket() failed: %s", strerror(errno));
         return -1;
     }
-    
-    // Configurar dirección del servidor
+
+    struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(MGMT_PORT);
-    
     if (inet_pton(AF_INET, MGMT_HOST, &server_addr.sin_addr) <= 0) {
-        perror("Error converting address");
+        log_error("inet_pton() failed for %s", MGMT_HOST);
         close(sock);
         return -1;
     }
-    
-    // Conectar
+
     if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Error connecting to server");
+        log_error("connect() to mgmt server failed: %s", strerror(errno));
         close(sock);
         return -1;
     }
-    
+
     return sock;
 }
 
-// Enviar comando al servidor
+// Send command to server
 int mgmt_send_command(int sock, mgmt_command_t cmd, const char* username, const char* password) {
     mgmt_message_t msg;
     
@@ -389,184 +385,146 @@ int mgmt_send_command(int sock, mgmt_command_t cmd, const char* username, const 
     
     ssize_t bytes_sent = send(sock, &msg, sizeof(msg), 0);
     if (bytes_sent < 0) {
-        perror("Error sending message");
+        log_error("send() to mgmt server failed: %s", strerror(errno));
         return -1;
     }
     
     return 0;
 }
 
-// Recibir respuesta del servidor
+// Receive response from server
 int mgmt_receive_response(int sock, mgmt_response_t* response) {
     if (!response) {
         return -1;
     }
     
-    ssize_t bytes_received = recv(sock, response, sizeof(mgmt_response_t), 0);
-    if (bytes_received < 0) {
-        perror("Error receiving response");
-        return -1;
+    ssize_t n = recv(sock, response, sizeof(mgmt_response_t), 0);
+    if (n < 0) {
+        log_error("recv() from mgmt server failed: %s", strerror(errno));
     }
-    
-    if (bytes_received == 0) {
-        printf("Server closed connection\n");
-        return -1;
-    }
-    
-    return 0;
+    return (n > 0) ? 0 : -1;
 }
 
-// Cerrar conexión
+// Close connection
 void mgmt_close_connection(int sock) {
     if (sock >= 0) {
         close(sock);
     }
 }
 
-// Funciones optimizadas para comunicación específica por comando
+// Optimized functions for specific command communication
 
-// Recibir respuesta de estadísticas optimizada
+// Receive optimized stats response
 int mgmt_receive_stats_response(int sock, mgmt_stats_response_t* response) {
     if (!response) {
         return -1;
     }
     
-    ssize_t bytes_received = recv(sock, response, sizeof(mgmt_stats_response_t), 0);
-    if (bytes_received < 0) {
-        perror("Error receiving stats response");
-        return -1;
+    ssize_t n = recv(sock, response, sizeof(mgmt_stats_response_t), 0);
+    if (n < 0) {
+        log_error("recv(stats) from mgmt server failed: %s", strerror(errno));
     }
-    
-    if (bytes_received == 0) {
-        printf("Server closed connection\n");
-        return -1;
-    }
-    
-    return 0;
+    return (n > 0) ? 0 : -1;
 }
 
-// Recibir respuesta de usuarios optimizada
+// Receive optimized users response
 int mgmt_receive_users_response(int sock, mgmt_users_response_t* response) {
     if (!response) {
         return -1;
     }
     
-    ssize_t bytes_received = recv(sock, response, sizeof(mgmt_users_response_t), 0);
-    if (bytes_received < 0) {
-        perror("Error receiving users response");
-        return -1;
+    ssize_t n = recv(sock, response, sizeof(mgmt_users_response_t), 0);
+    if (n < 0) {
+        log_error("recv(users) from mgmt server failed: %s", strerror(errno));
     }
-    
-    if (bytes_received == 0) {
-        printf("Server closed connection\n");
-        return -1;
-    }
-    
-    return 0;
+    return (n > 0) ? 0 : -1;
 }
 
-// Recibir respuesta simple optimizada
+// Receive optimized simple response
 int mgmt_receive_simple_response(int sock, mgmt_simple_response_t* response) {
     if (!response) {
         return -1;
     }
     
-    ssize_t bytes_received = recv(sock, response, sizeof(mgmt_simple_response_t), 0);
-    if (bytes_received < 0) {
-        perror("Error receiving simple response");
-        return -1;
+    ssize_t n = recv(sock, response, sizeof(mgmt_simple_response_t), 0);
+    if (n < 0) {
+        log_error("recv(simple) from mgmt server failed: %s", strerror(errno));
     }
-    
-    if (bytes_received == 0) {
-        printf("Server closed connection\n");
-        return -1;
-    }
-    
-    return 0;
+    return (n > 0) ? 0 : -1;
 }
 
-// Enviar respuesta de estadísticas optimizada
+// Send optimized stats response
 int mgmt_send_stats_response(int sock, mgmt_stats_response_t* response) {
     if (!response) {
         return -1;
     }
     
-    ssize_t bytes_sent = send(sock, response, sizeof(mgmt_stats_response_t), 0);
-    if (bytes_sent <= 0) {
-        return -1;
+    ssize_t n = send(sock, response, sizeof(mgmt_stats_response_t), 0);
+    if (n < 0) {
+        log_error("send(stats) to mgmt client failed: %s", strerror(errno));
     }
-    
-    return 0;
+    return (n == sizeof(mgmt_stats_response_t)) ? 0 : -1;
 }
 
-// Enviar respuesta de usuarios optimizada
+// Send optimized users response
 int mgmt_send_users_response(int sock, mgmt_users_response_t* response) {
     if (!response) {
         return -1;
     }
     
-    ssize_t bytes_sent = send(sock, response, sizeof(mgmt_users_response_t), 0);
-    if (bytes_sent <= 0) {
-        return -1;
+    ssize_t n = send(sock, response, sizeof(mgmt_users_response_t), 0);
+    if (n < 0) {
+        log_error("send(users) to mgmt client failed: %s", strerror(errno));
     }
-    
-    return 0;
+    return (n == sizeof(mgmt_users_response_t)) ? 0 : -1;
 }
 
-// Enviar respuesta simple optimizada
+// Send optimized simple response
 int mgmt_send_simple_response(int sock, mgmt_simple_response_t* response) {
     if (!response) {
         return -1;
     }
     
-    ssize_t bytes_sent = send(sock, response, sizeof(mgmt_simple_response_t), 0);
-    if (bytes_sent <= 0) {
-        return -1;
+    ssize_t n = send(sock, response, sizeof(mgmt_simple_response_t), 0);
+    if (n < 0) {
+        log_error("send(simple) to mgmt client failed: %s", strerror(errno));
     }
-    
-    return 0;
+    return (n == sizeof(mgmt_simple_response_t)) ? 0 : -1;
 }
 
-// Iniciar servidor de gestión
+// Start management server
 int mgmt_server_start(int port) {
-    int server_sock;
-    struct sockaddr_in server_addr;
-    int opt = 1;
-    
-    // Crear socket
-    server_sock = socket(AF_INET, SOCK_STREAM, 0);
+    int server_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sock < 0) {
-        perror("Error creating management server socket");
+        log_fatal("mgmt socket() failed: %s", strerror(errno));
         return -1;
     }
-    
-    // Configurar opciones del socket
-    if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("Error setting socket options");
-        close(server_sock);
-        return -1;
-    }
-    
-    // Configurar dirección del servidor
+
+    struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     server_addr.sin_port = htons(port);
-    
-    // Bind
+
+    int reuse = 1;
+    if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        log_fatal("mgmt setsockopt(SO_REUSEADDR) failed: %s", strerror(errno));
+        close(server_sock);
+        return -1;
+    }
+
     if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Error binding management server socket");
+        log_fatal("mgmt bind() failed: %s", strerror(errno));
         close(server_sock);
         return -1;
     }
-    
-    // Listen
+
     if (listen(server_sock, 5) < 0) {
-        perror("Error listening on management server socket");
+        log_fatal("mgmt listen() failed: %s", strerror(errno));
         close(server_sock);
         return -1;
     }
-    
-    printf("[INF] Management server listening on port %d\n", port);
+
+    log_info("Management server started on port %d", port);
     return server_sock;
 }

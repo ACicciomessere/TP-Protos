@@ -18,6 +18,7 @@
 #include "../args.h"
 #include "../shared/shared.h"
 #include "socks5.h"
+#include "../logger.h"
 
 #define MAX_THREAD_POOL_SIZE 500
 #define MAX_PENDING_CONNECTIONS 1024
@@ -57,7 +58,7 @@ static void print_server_statistics(void);
 static int find_available_thread_slot(void);
 
 static void sigterm_handler(int signal) {
-    printf("\n[INF] Received signal %d, shutting down gracefully...\n", signal);
+    log_info("Received signal %d, shutting down gracefully...", signal);
     done = true;
 }
 
@@ -91,17 +92,18 @@ static void print_server_statistics(void) {
     
     time_t uptime = time(NULL) - server_stats.start_time;
     
-    printf("\n=== SOCKS5 Server Statistics ===\n");
-    printf("Uptime: %ld seconds\n", uptime);
-    printf("Total connections: %zu\n", server_stats.total_connections);
-    printf("Current connections: %zu\n", server_stats.current_connections);
-    printf("Peak concurrent connections: %zu\n", server_stats.peak_connections);
-    printf("Bytes transferred: %zu\n", server_stats.bytes_transferred);
-    printf("Failed connections: %zu\n", server_stats.failed_connections);
+    // Use log_info to print statistics, so they go to the log file
+    log_info("--- SOCKS5 Server Statistics ---");
+    log_info("Uptime: %ld seconds", uptime);
+    log_info("Total connections: %zu", server_stats.total_connections);
+    log_info("Current connections: %zu", server_stats.current_connections);
+    log_info("Peak concurrent connections: %zu", server_stats.peak_connections);
+    log_info("Bytes transferred: %zu", server_stats.bytes_transferred);
+    log_info("Failed connections: %zu", server_stats.failed_connections);
     if (uptime > 0) {
-        printf("Connections per second: %.2f\n", (double)server_stats.total_connections / uptime);
+        log_info("Connections per second: %.2f", (double)server_stats.total_connections / uptime);
     }
-    printf("================================\n\n");
+    log_info("---------------------------------");
     
     pthread_mutex_unlock(&stats_mutex);
 }
@@ -122,19 +124,19 @@ static int create_server_socket(const char *address, int port) {
     } else if (strcmp(address, "0.0.0.0") == 0) {
         family = AF_INET;
     } else {
-        fprintf(stderr, "[ERR] Invalid address format: %s\n", address);
+        log_fatal("Invalid address format: %s", address);
         return -1;
     }
     
     server_fd = socket(family, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        perror("[ERR] socket()");
+        log_fatal("socket(): %s", strerror(errno));
         return -1;
     }
     
     int reuse = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("[ERR] setsockopt(SO_REUSEADDR)");
+        log_fatal("setsockopt(SO_REUSEADDR): %s", strerror(errno));
         close(server_fd);
         return -1;
     }
@@ -151,7 +153,7 @@ static int create_server_socket(const char *address, int port) {
         }
         
         if (bind(server_fd, (struct sockaddr*)&addr4, sizeof(addr4)) < 0) {
-            perror("[ERR] bind()");
+            log_fatal("bind() on %s:%d failed: %s", address, port, strerror(errno));
             close(server_fd);
             return -1;
         }
@@ -162,7 +164,7 @@ static int create_server_socket(const char *address, int port) {
         
         int ipv6only = 0;
         if (setsockopt(server_fd, IPPROTO_IPV6, IPV6_V6ONLY, &ipv6only, sizeof(ipv6only)) < 0) {
-            perror("[ERR] setsockopt(IPV6_V6ONLY)");
+            log_fatal("setsockopt(IPV6_V6ONLY): %s", strerror(errno));
             close(server_fd);
             return -1;
         }
@@ -174,20 +176,20 @@ static int create_server_socket(const char *address, int port) {
         }
         
         if (bind(server_fd, (struct sockaddr*)&addr6, sizeof(addr6)) < 0) {
-            perror("[ERR] bind()");
+            log_fatal("bind() on [%s]:%d failed: %s", address, port, strerror(errno));
             close(server_fd);
             return -1;
         }
     }
     
     if (listen(server_fd, MAX_PENDING_CONNECTIONS) < 0) {
-        perror("[ERR] listen()");
+        log_fatal("listen(): %s", strerror(errno));
         close(server_fd);
         return -1;
     }
     
     if (selector_set_nonblocking(server_fd) < 0) {
-        perror("[ERR] Setting server socket non-blocking");
+        log_error("Setting server socket non-blocking failed: %s", strerror(errno));
         close(server_fd);
         return -1;
     }
@@ -228,12 +230,12 @@ static void* handle_socks5_connection_thread(void* arg) {
     if (conn_data->client_addr.ss_family == AF_INET) {
         struct sockaddr_in *addr_in = (struct sockaddr_in*)&conn_data->client_addr;
         inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, sizeof(addr_str));
-        printf("[INF] SOCKS5 connection from %s:%d [Thread %d]\n", 
+        log_info("SOCKS5 connection from %s:%d [Thread %d]", 
                addr_str, ntohs(addr_in->sin_port), thread_slot);
     } else {
         struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6*)&conn_data->client_addr;
         inet_ntop(AF_INET6, &addr_in6->sin6_addr, addr_str, sizeof(addr_str));
-        printf("[INF] SOCKS5 connection from [%s]:%d [Thread %d]\n", 
+        log_info("SOCKS5 connection from [%s]:%d [Thread %d]", 
                addr_str, ntohs(addr_in6->sin6_port), thread_slot);
     }
     
@@ -242,9 +244,9 @@ static void* handle_socks5_connection_thread(void* arg) {
     time_t connection_duration = time(NULL) - conn_data->connection_start;
     
     if (result == 0) {
-        printf("[INF] SOCKS5 connection completed successfully (duration: %ld seconds)\n", connection_duration);
+        log_info("SOCKS5 connection completed successfully (duration: %ld seconds)", connection_duration);
     } else {
-        printf("[INF] SOCKS5 connection failed (duration: %ld seconds)\n", connection_duration);
+        log_info("SOCKS5 connection failed (duration: %ld seconds)", connection_duration);
         pthread_mutex_lock(&stats_mutex);
         server_stats.failed_connections++;
         pthread_mutex_unlock(&stats_mutex);
@@ -265,7 +267,7 @@ static void* handle_management_connection_thread(void* arg) {
     
     pthread_detach(pthread_self());
     
-    printf("[INF] Management connection established\n");
+    log_info("Management connection established");
     
     char buffer[1024];
     ssize_t bytes_read;
@@ -295,7 +297,7 @@ static void* handle_management_connection_thread(void* arg) {
     }
     
     close(client_fd);
-    printf("[INF] Management connection closed\n");
+    log_info("Management connection closed");
     
     free(conn_data);
     return NULL;
@@ -307,47 +309,46 @@ static void socks5_passive_accept(struct selector_key *key) {
     
     int client_fd = accept(key->fd, (struct sockaddr*)&client_addr, &client_addr_len);
     if (client_fd < 0) {
-        if (errno != EWOULDBLOCK && errno != EAGAIN) {
-            perror("[ERR] accept() on SOCKS5 socket");
-        }
+        log_warn("accept() failed: %s", strerror(errno));
         return;
     }
-    
-    int thread_slot = find_available_thread_slot();
-    if (thread_slot == -1) {
-        printf("[WARN] No available thread slots, rejecting connection\n");
+
+    if (selector_set_nonblocking(client_fd) < 0) {
+        log_warn("selector_set_nonblocking() for client failed: %s", strerror(errno));
         close(client_fd);
-        pthread_mutex_lock(&stats_mutex);
-        server_stats.failed_connections++;
-        pthread_mutex_unlock(&stats_mutex);
+        return;
+    }
+
+    int slot = find_available_thread_slot();
+    if (slot == -1) {
+        log_warn("Max thread pool size reached, dropping connection");
+        close(client_fd);
         return;
     }
     
     struct connection_data* conn_data = malloc(sizeof(struct connection_data));
-    if (!conn_data) {
-        printf("[ERR] Failed to allocate connection data\n");
+    if (conn_data == NULL) {
+        log_error("malloc for connection_data failed");
         close(client_fd);
-        release_thread_slot(thread_slot);
+        release_thread_slot(slot);
         return;
     }
     
-    conn_data->client_fd = client_fd;
-    conn_data->client_addr = client_addr;
+    memcpy(&conn_data->client_addr, &client_addr, client_addr_len);
     conn_data->client_addr_len = client_addr_len;
-    conn_data->args = &server_args;
+    conn_data->client_fd = client_fd;
+    conn_data->args = key->data;
     conn_data->connection_start = time(NULL);
-    conn_data->thread_slot = thread_slot;
+    conn_data->thread_slot = slot;
     
-    if (pthread_create(&thread_pool[thread_slot], NULL, handle_socks5_connection_thread, conn_data) != 0) {
-        perror("[ERR] pthread_create() for SOCKS5 connection");
-        close(client_fd);
+    if (pthread_create(&thread_pool[slot], NULL, handle_socks5_connection_thread, conn_data) != 0) {
+        log_error("Failed to create thread for new SOCKS5 connection");
         free(conn_data);
-        release_thread_slot(thread_slot);
-        return;
+        close(client_fd);
+        release_thread_slot(slot);
     }
-    
-    update_statistics(1, 0); 
 }
+
 
 static void mgmt_passive_accept(struct selector_key *key) {
     struct sockaddr_storage client_addr;
@@ -355,33 +356,34 @@ static void mgmt_passive_accept(struct selector_key *key) {
     
     int client_fd = accept(key->fd, (struct sockaddr*)&client_addr, &client_addr_len);
     if (client_fd < 0) {
-        if (errno != EWOULDBLOCK && errno != EAGAIN) {
-            perror("[ERR] accept() on management socket");
-        }
+        log_warn("accept() for management failed: %s", strerror(errno));
         return;
     }
-    
+    if (selector_set_nonblocking(client_fd) < 0) {
+        log_warn("selector_set_nonblocking() for mgmt client failed: %s", strerror(errno));
+        close(client_fd);
+        return;
+    }
+
     struct connection_data* conn_data = malloc(sizeof(struct connection_data));
-    if (!conn_data) {
-        printf("[ERR] Failed to allocate management connection data\n");
+    if (conn_data == NULL) {
+        log_error("malloc for management connection_data failed");
         close(client_fd);
         return;
     }
     
-    conn_data->client_fd = client_fd;
-    conn_data->client_addr = client_addr;
+    memcpy(&conn_data->client_addr, &client_addr, client_addr_len);
     conn_data->client_addr_len = client_addr_len;
-    conn_data->args = &server_args;
-    conn_data->connection_start = time(NULL);
+    conn_data->client_fd = client_fd;
+    conn_data->args = key->data;
     
-    pthread_t mgmt_thread;
-    if (pthread_create(&mgmt_thread, NULL, handle_management_connection_thread, conn_data) != 0) {
-        perror("[ERR] pthread_create() for management connection");
-        close(client_fd);
+    if (pthread_create(&thread_pool[0], NULL, handle_management_connection_thread, conn_data) != 0) {
+        log_error("Failed to create thread for new management connection");
         free(conn_data);
-        return;
+        close(client_fd);
     }
 }
+
 
 static const struct fd_handler socks5_passive_handler = {
     .handle_read = socks5_passive_accept,
@@ -398,146 +400,87 @@ static const struct fd_handler mgmt_passive_handler = {
 };
 
 int main(int argc, char *argv[]) {
-    setvbuf(stdout, NULL, _IONBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
-    
+    // Default log level
+    log_level current_log_level = LOG_INFO;
+    const char *log_file = "socks5.log"; // Default log file
+
+    // We could parse arguments to change log_level, for now it's fixed
+    logger_init(current_log_level, log_file);
+
     parse_args(argc, argv, &server_args);
-    
     server_stats.start_time = time(NULL);
-    
-    printf("[INF] High-Performance SOCKS5 Proxy Server\n");
-    printf("[INF] SOCKS5 address: %s:%d\n", server_args.socks_addr, server_args.socks_port);
-    printf("[INF] Management address: %s:%d\n", server_args.mng_addr, server_args.mng_port);
-    printf("[INF] Max concurrent connections: %d\n", MAX_THREAD_POOL_SIZE);
-    
-    int user_count = 0;
-    for (int i = 0; i < MAX_USERS; i++) {
-        if (server_args.users[i].name && server_args.users[i].pass) {
-            user_count++;
-        }
-    }
-    printf("[INF] Configured users: %d\n", user_count);
-    
-    if (user_count > 0) {
-        printf("[INF] Username/password authentication enabled\n");
-    } else {
-        printf("[INF] No authentication required\n");
-    }
-    
-    if (mgmt_init_shared_memory() < 0) {
-        fprintf(stderr, "[ERR] Failed to initialize shared memory\n");
-        return 1;
-    }
-    
+
+    // Trap signals
     signal(SIGTERM, sigterm_handler);
     signal(SIGINT, sigterm_handler);
     signal(SIGCHLD, sigchld_handler);
     signal(SIGUSR1, sigusr1_handler);
-    signal(SIGPIPE, SIG_IGN);
     
-    memset(thread_pool_active, false, sizeof(thread_pool_active));
-    
-    int socks5_fd = create_server_socket(server_args.socks_addr, server_args.socks_port);
-    if (socks5_fd < 0) {
-        fprintf(stderr, "[ERR] Failed to create SOCKS5 server socket\n");
-        mgmt_cleanup_shared_memory();
+    // Initialize thread pool
+    memset(thread_pool_active, 0, sizeof(thread_pool_active));
+
+    int socks5_server_fd = create_server_socket(server_args.socks_addr, server_args.socks_port);
+    if (socks5_server_fd < 0) {
+        log_fatal("Failed to create SOCKS5 server socket");
         return 1;
     }
-    
-    int mgmt_fd = create_server_socket(server_args.mng_addr, server_args.mng_port);
-    if (mgmt_fd < 0) {
-        fprintf(stderr, "[ERR] Failed to create management server socket\n");
-        close(socks5_fd);
-        mgmt_cleanup_shared_memory();
+    log_info("SOCKS5 server listening on %s:%d", server_args.socks_addr, server_args.socks_port);
+
+    int mgmt_server_fd = create_server_socket(server_args.mng_addr, server_args.mng_port);
+    if (mgmt_server_fd < 0) {
+        log_fatal("Failed to create management server socket");
+        close(socks5_server_fd);
         return 1;
     }
-    
+    log_info("Management server listening on %s:%d", server_args.mng_addr, server_args.mng_port);
+
     const struct selector_init_config config = {
         .signal = SIGALRM,
-        .select_timeout = {
-            .tv_sec = 1,
-            .tv_nsec = 0,
-        },
+        .select_timeout = {.tv_sec = 1, .tv_nsec = 0,},
     };
     
     if (selector_initialize(&config) != SELECTOR_SUCCESS) {
-        fprintf(stderr, "[ERR] Failed to initialize selector\n");
-        close(socks5_fd);
-        close(mgmt_fd);
-        mgmt_cleanup_shared_memory();
+        log_fatal("Failed to initialize selector");
         return 1;
     }
     
-    main_selector = selector_create(1024);
-    if (!main_selector) {
-        fprintf(stderr, "[ERR] Failed to create selector\n");
-        close(socks5_fd);
-        close(mgmt_fd);
-        mgmt_cleanup_shared_memory();
+    main_selector = selector_create(MAX_PENDING_CONNECTIONS);
+    if (main_selector == NULL) {
+        log_fatal("Failed to create selector");
         return 1;
     }
     
-    if (selector_register(main_selector, socks5_fd, &socks5_passive_handler, OP_READ, NULL) != SELECTOR_SUCCESS) {
-        fprintf(stderr, "[ERR] Failed to register SOCKS5 server socket\n");
-        goto cleanup;
-    }
-    
-    if (selector_register(main_selector, mgmt_fd, &mgmt_passive_handler, OP_READ, NULL) != SELECTOR_SUCCESS) {
-        fprintf(stderr, "[ERR] Failed to register management server socket\n");
-        goto cleanup;
-    }
-    
-    printf("[INF] Server ready - accepting connections\n");
-    printf("[INF] Send SIGUSR1 (kill -USR1 %d) for statistics\n", getpid());
-    
-    time_t last_stats_time = time(NULL);
-    
-    while (!done) {
-        selector_status status = selector_select(main_selector);
-        if (status != SELECTOR_SUCCESS) {
-            if (status == SELECTOR_IO && errno == EINTR) {
-                continue;  // Interrupted by signal
-            }
-            fprintf(stderr, "[ERR] Selector error: %s\n", selector_strerror(status));
-            break;
-        }
-        
-        time_t current_time = time(NULL);
-        if (current_time - last_stats_time >= STATISTICS_UPDATE_INTERVAL) {
-            last_stats_time = current_time;
-            
-            pthread_mutex_lock(&stats_mutex);
-            shared_data_t* shared = mgmt_get_shared_data();
-            if (shared) {
-                shared->stats.total_connections = server_stats.total_connections;
-                shared->stats.current_connections = server_stats.current_connections;
-                shared->stats.total_bytes_transferred = server_stats.bytes_transferred;
-            }
-            pthread_mutex_unlock(&stats_mutex);
-        }
-    }
-    
-    printf("[INF] Shutting down gracefully...\n");
-    
-    print_server_statistics();
-    
-    printf("[INF] Waiting for active connections to finish...\n");
-    int wait_count = 0;
-    while (server_stats.current_connections > 0 && wait_count < 30) {
-        sleep(1);
-        wait_count++;
-    }
-    
-    if (server_stats.current_connections > 0) {
-        printf("[WARN] Forcing shutdown with %zu active connections\n", server_stats.current_connections);
+    if (selector_register(main_selector, socks5_server_fd, &socks5_passive_handler, OP_READ, &server_args) != SELECTOR_SUCCESS) {
+        log_fatal("Failed to register SOCKS5 server socket with selector");
+        return 1;
     }
 
-cleanup:
+    if (selector_register(main_selector, mgmt_server_fd, &mgmt_passive_handler, OP_READ, &server_args) != SELECTOR_SUCCESS) {
+        log_fatal("Failed to register management server socket with selector");
+        return 1;
+    }
+    
+    log_info("Server started successfully. PID: %d", getpid());
+    
+    while (!done) {
+        selector_status selector_status = selector_select(main_selector);
+        if (selector_status != SELECTOR_SUCCESS) {
+            if (!done) {
+                log_error("selector_select() failed: %s", selector_strerror(selector_status));
+            }
+        }
+    }
+    
+    log_info("Shutting down server...");
+    
+    // Clean up
     selector_destroy(main_selector);
     selector_cleanup();
-    close(socks5_fd);
-    close(mgmt_fd);
-    mgmt_cleanup_shared_memory();
+    close(socks5_server_fd);
+    close(mgmt_server_fd);
+    logger_close();
+
+    log_info("Server shut down gracefully.");
     
     return 0;
 }

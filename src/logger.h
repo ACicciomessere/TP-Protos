@@ -2,23 +2,59 @@
 #define LOGGER_H
 
 #include <stdio.h>
+#include <stdarg.h>
 
 /*
- * Interfaz básica de logger con soporte a múltiples hilos.
- * Todas las funciones son seguras para uso concurrente.
- * El logger está pensado principalmente para registrar eventos
- * relacionados con métricas, aunque puede usarse de forma genérica.
+ * Improved, thread-safe logger interface with severity levels.
  */
 
-/* Inicializa el logger abriendo el archivo indicado. Si se llama más
- * de una vez, se ignora mientras el logger esté ya inicializado.
- */
-void logger_init(const char *filename);
+// Definition of log levels
+typedef enum {
+    LOG_DEBUG,
+    LOG_INFO,
+    LOG_WARN,
+    LOG_ERROR,
+    LOG_FATAL,
+} log_level;
 
-/* Cierra el archivo de log. Debe llamarse al finalizar la aplicación. */
+#define LOG_DEFAULT_LEVEL LOG_INFO
+
+/*
+ * Initializes the logger.
+ *  - level: Minimum log level to be recorded.
+ *  - filename: Log file. If NULL, stderr will be used.
+ */
+void logger_init(log_level level, const char *filename);
+
+/* Changes the log level at runtime. */
+void logger_set_level(log_level level);
+
+/* Closes the log file. Must be called at application shutdown. */
 void logger_close(void);
 
-/* Registra un mensaje en el log. Acepta formato printf-like. */
-void logger_log(const char *fmt, ...);
+/*
+ * Logs a generic log message.
+ * It is preferable to use the helper macros (log_info, log_debug, etc.).
+ */
+void logger_log(log_level level, const char *file, int line, const char *fmt, ...);
+
+
+/*
+ * Logs a user access event.
+ * Format: [timestamp] [ACCESS] user='...' status='...' details='...'
+ *  - user: Name of the user performing the action (can be NULL for anonymous).
+ *  - status: A string describing the result (e.g., "OK", "FAIL_AUTH", "FAIL_CONNECT").
+ *  - details: Additional details, such as the connection destination.
+ */
+void log_access(const char *user, const char *status, const char *details_fmt, ...);
+
+
+/* Macros to facilitate logging */
+#define log_debug(...) logger_log(LOG_DEBUG, __FILE__, __LINE__, __VA_ARGS__)
+#define log_info(...)  logger_log(LOG_INFO,  __FILE__, __LINE__, __VA_ARGS__)
+#define log_warn(...)  logger_log(LOG_WARN,  __FILE__, __LINE__, __VA_ARGS__)
+#define log_error(...) logger_log(LOG_ERROR, __FILE__, __LINE__, __VA_ARGS__)
+#define log_fatal(...) logger_log(LOG_FATAL, __FILE__, __LINE__, __VA_ARGS__)
+
 
 #endif // LOGGER_H
