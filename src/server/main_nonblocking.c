@@ -18,6 +18,7 @@
 #include "../args.h"
 #include "../shared/shared.h"
 #include "socks5.h"
+#include "../logger.h"
 
 #define MAX_THREAD_POOL_SIZE 500
 #define MAX_PENDING_CONNECTIONS 1024
@@ -57,7 +58,7 @@ static void print_server_statistics(void);
 static int find_available_thread_slot(void);
 
 static void sigterm_handler(int signal) {
-    printf("\n[INF] Received signal %d, shutting down gracefully...\n", signal);
+    log_info("Received signal %d, shutting down gracefully...", signal);
     done = true;
 }
 
@@ -122,19 +123,19 @@ static int create_server_socket(const char *address, int port) {
     } else if (strcmp(address, "0.0.0.0") == 0) {
         family = AF_INET;
     } else {
-        fprintf(stderr, "[ERR] Invalid address format: %s\n", address);
+        log_error("Invalid address format: %s", address);
         return -1;
     }
     
     server_fd = socket(family, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        perror("[ERR] socket()");
+        log_fatal("socket(): %s", strerror(errno));
         return -1;
     }
     
     int reuse = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        perror("[ERR] setsockopt(SO_REUSEADDR)");
+        log_error("setsockopt(SO_REUSEADDR): %s", strerror(errno));
         close(server_fd);
         return -1;
     }
@@ -151,7 +152,7 @@ static int create_server_socket(const char *address, int port) {
         }
         
         if (bind(server_fd, (struct sockaddr*)&addr4, sizeof(addr4)) < 0) {
-            perror("[ERR] bind()");
+            log_fatal("bind(): %s", strerror(errno));
             close(server_fd);
             return -1;
         }
@@ -162,7 +163,7 @@ static int create_server_socket(const char *address, int port) {
         
         int ipv6only = 0;
         if (setsockopt(server_fd, IPPROTO_IPV6, IPV6_V6ONLY, &ipv6only, sizeof(ipv6only)) < 0) {
-            perror("[ERR] setsockopt(IPV6_V6ONLY)");
+            log_error("setsockopt(IPV6_V6ONLY): %s", strerror(errno));
             close(server_fd);
             return -1;
         }
@@ -174,20 +175,20 @@ static int create_server_socket(const char *address, int port) {
         }
         
         if (bind(server_fd, (struct sockaddr*)&addr6, sizeof(addr6)) < 0) {
-            perror("[ERR] bind()");
+            log_fatal("bind(): %s", strerror(errno));
             close(server_fd);
             return -1;
         }
     }
     
     if (listen(server_fd, MAX_PENDING_CONNECTIONS) < 0) {
-        perror("[ERR] listen()");
+        log_fatal("listen(): %s", strerror(errno));
         close(server_fd);
         return -1;
     }
     
     if (selector_set_nonblocking(server_fd) < 0) {
-        perror("[ERR] Setting server socket non-blocking");
+        log_error("Setting server socket non-blocking: %s", strerror(errno));
         close(server_fd);
         return -1;
     }
@@ -228,12 +229,12 @@ static void* handle_socks5_connection_thread(void* arg) {
     if (conn_data->client_addr.ss_family == AF_INET) {
         struct sockaddr_in *addr_in = (struct sockaddr_in*)&conn_data->client_addr;
         inet_ntop(AF_INET, &addr_in->sin_addr, addr_str, sizeof(addr_str));
-        printf("[INF] SOCKS5 connection from %s:%d [Thread %d]\n", 
+        log_info("SOCKS5 connection from %s:%d [Thread %d]", 
                addr_str, ntohs(addr_in->sin_port), thread_slot);
     } else {
         struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6*)&conn_data->client_addr;
         inet_ntop(AF_INET6, &addr_in6->sin6_addr, addr_str, sizeof(addr_str));
-        printf("[INF] SOCKS5 connection from [%s]:%d [Thread %d]\n", 
+        log_info("SOCKS5 connection from [%s]:%d [Thread %d]", 
                addr_str, ntohs(addr_in6->sin6_port), thread_slot);
     }
     
@@ -242,9 +243,9 @@ static void* handle_socks5_connection_thread(void* arg) {
     time_t connection_duration = time(NULL) - conn_data->connection_start;
     
     if (result == 0) {
-        printf("[INF] SOCKS5 connection completed successfully (duration: %ld seconds)\n", connection_duration);
+        log_info("SOCKS5 connection completed successfully (duration: %ld seconds)", connection_duration);
     } else {
-        printf("[INF] SOCKS5 connection failed (duration: %ld seconds)\n", connection_duration);
+        log_info("SOCKS5 connection failed (duration: %ld seconds)", connection_duration);
         pthread_mutex_lock(&stats_mutex);
         server_stats.failed_connections++;
         pthread_mutex_unlock(&stats_mutex);
@@ -265,7 +266,7 @@ static void* handle_management_connection_thread(void* arg) {
     
     pthread_detach(pthread_self());
     
-    printf("[INF] Management connection established\n");
+    log_info("Management connection established");
     
     char buffer[1024];
     ssize_t bytes_read;
@@ -295,7 +296,7 @@ static void* handle_management_connection_thread(void* arg) {
     }
     
     close(client_fd);
-    printf("[INF] Management connection closed\n");
+    log_info("Management connection closed");
     
     free(conn_data);
     return NULL;
@@ -308,14 +309,14 @@ static void socks5_passive_accept(struct selector_key *key) {
     int client_fd = accept(key->fd, (struct sockaddr*)&client_addr, &client_addr_len);
     if (client_fd < 0) {
         if (errno != EWOULDBLOCK && errno != EAGAIN) {
-            perror("[ERR] accept() on SOCKS5 socket");
+            log_error("accept() on SOCKS5 socket: %s", strerror(errno));
         }
         return;
     }
     
     int thread_slot = find_available_thread_slot();
     if (thread_slot == -1) {
-        printf("[WARN] No available thread slots, rejecting connection\n");
+        log_warn("No available thread slots, rejecting connection");
         close(client_fd);
         pthread_mutex_lock(&stats_mutex);
         server_stats.failed_connections++;
@@ -325,7 +326,7 @@ static void socks5_passive_accept(struct selector_key *key) {
     
     struct connection_data* conn_data = malloc(sizeof(struct connection_data));
     if (!conn_data) {
-        printf("[ERR] Failed to allocate connection data\n");
+        log_error("Failed to allocate connection data");
         close(client_fd);
         release_thread_slot(thread_slot);
         return;
@@ -339,7 +340,7 @@ static void socks5_passive_accept(struct selector_key *key) {
     conn_data->thread_slot = thread_slot;
     
     if (pthread_create(&thread_pool[thread_slot], NULL, handle_socks5_connection_thread, conn_data) != 0) {
-        perror("[ERR] pthread_create() for SOCKS5 connection");
+        log_error("pthread_create() for SOCKS5 connection: %s", strerror(errno));
         close(client_fd);
         free(conn_data);
         release_thread_slot(thread_slot);
@@ -356,14 +357,14 @@ static void mgmt_passive_accept(struct selector_key *key) {
     int client_fd = accept(key->fd, (struct sockaddr*)&client_addr, &client_addr_len);
     if (client_fd < 0) {
         if (errno != EWOULDBLOCK && errno != EAGAIN) {
-            perror("[ERR] accept() on management socket");
+            log_error("accept() on management socket: %s", strerror(errno));
         }
         return;
     }
     
     struct connection_data* conn_data = malloc(sizeof(struct connection_data));
     if (!conn_data) {
-        printf("[ERR] Failed to allocate management connection data\n");
+        log_error("Failed to allocate management connection data");
         close(client_fd);
         return;
     }
@@ -376,7 +377,7 @@ static void mgmt_passive_accept(struct selector_key *key) {
     
     pthread_t mgmt_thread;
     if (pthread_create(&mgmt_thread, NULL, handle_management_connection_thread, conn_data) != 0) {
-        perror("[ERR] pthread_create() for management connection");
+        log_error("pthread_create() for management connection: %s", strerror(errno));
         close(client_fd);
         free(conn_data);
         return;
@@ -401,31 +402,34 @@ int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     
+    logger_init(LOG_INFO, "metrics.log");
+    atexit(logger_close);
+
     parse_args(argc, argv, &server_args);
     
     server_stats.start_time = time(NULL);
     
-    printf("[INF] High-Performance SOCKS5 Proxy Server\n");
-    printf("[INF] SOCKS5 address: %s:%d\n", server_args.socks_addr, server_args.socks_port);
-    printf("[INF] Management address: %s:%d\n", server_args.mng_addr, server_args.mng_port);
-    printf("[INF] Max concurrent connections: %d\n", MAX_THREAD_POOL_SIZE);
+    log_info("High-Performance SOCKS5 Proxy Server");
+    log_info("SOCKS5 address: %s:%d", server_args.socks_addr, server_args.socks_port);
+    log_info("Management address: %s:%d", server_args.mng_addr, server_args.mng_port);
+    log_info("Max concurrent connections: %d", MAX_THREAD_POOL_SIZE);
     
     int user_count = 0;
     for (int i = 0; i < MAX_USERS; i++) {
-        if (server_args.users[i].name && server_args.users[i].pass) {
+        if (server_args.users[i].name[0] != '\0' && server_args.users[i].pass[0] != '\0') {
             user_count++;
         }
     }
-    printf("[INF] Configured users: %d\n", user_count);
+    log_info("Configured users: %d", user_count);
     
     if (user_count > 0) {
-        printf("[INF] Username/password authentication enabled\n");
+        log_info("Username/password authentication enabled");
     } else {
-        printf("[INF] No authentication required\n");
+        log_info("No authentication required");
     }
     
     if (mgmt_init_shared_memory() < 0) {
-        fprintf(stderr, "[ERR] Failed to initialize shared memory\n");
+        log_fatal("Failed to initialize shared memory");
         return 1;
     }
     
@@ -439,14 +443,14 @@ int main(int argc, char *argv[]) {
     
     int socks5_fd = create_server_socket(server_args.socks_addr, server_args.socks_port);
     if (socks5_fd < 0) {
-        fprintf(stderr, "[ERR] Failed to create SOCKS5 server socket\n");
+        log_fatal("Failed to create SOCKS5 server socket");
         mgmt_cleanup_shared_memory();
         return 1;
     }
     
     int mgmt_fd = create_server_socket(server_args.mng_addr, server_args.mng_port);
     if (mgmt_fd < 0) {
-        fprintf(stderr, "[ERR] Failed to create management server socket\n");
+        log_fatal("Failed to create management server socket");
         close(socks5_fd);
         mgmt_cleanup_shared_memory();
         return 1;
@@ -461,7 +465,7 @@ int main(int argc, char *argv[]) {
     };
     
     if (selector_initialize(&config) != SELECTOR_SUCCESS) {
-        fprintf(stderr, "[ERR] Failed to initialize selector\n");
+        log_fatal("Failed to initialize selector");
         close(socks5_fd);
         close(mgmt_fd);
         mgmt_cleanup_shared_memory();
@@ -470,7 +474,7 @@ int main(int argc, char *argv[]) {
     
     main_selector = selector_create(1024);
     if (!main_selector) {
-        fprintf(stderr, "[ERR] Failed to create selector\n");
+        log_fatal("Failed to create selector");
         close(socks5_fd);
         close(mgmt_fd);
         mgmt_cleanup_shared_memory();
@@ -478,17 +482,17 @@ int main(int argc, char *argv[]) {
     }
     
     if (selector_register(main_selector, socks5_fd, &socks5_passive_handler, OP_READ, NULL) != SELECTOR_SUCCESS) {
-        fprintf(stderr, "[ERR] Failed to register SOCKS5 server socket\n");
+        log_fatal("Failed to register SOCKS5 server socket");
         goto cleanup;
     }
     
     if (selector_register(main_selector, mgmt_fd, &mgmt_passive_handler, OP_READ, NULL) != SELECTOR_SUCCESS) {
-        fprintf(stderr, "[ERR] Failed to register management server socket\n");
+        log_fatal("Failed to register management server socket");
         goto cleanup;
     }
     
-    printf("[INF] Server ready - accepting connections\n");
-    printf("[INF] Send SIGUSR1 (kill -USR1 %d) for statistics\n", getpid());
+    log_info("Server ready - accepting connections");
+    log_info("Send SIGUSR1 (kill -USR1 %d) for statistics", getpid());
     
     time_t last_stats_time = time(NULL);
     
@@ -498,7 +502,7 @@ int main(int argc, char *argv[]) {
             if (status == SELECTOR_IO && errno == EINTR) {
                 continue;  // Interrupted by signal
             }
-            fprintf(stderr, "[ERR] Selector error: %s\n", selector_strerror(status));
+            log_error("Selector error: %s", selector_strerror(status));
             break;
         }
         
@@ -517,11 +521,11 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    printf("[INF] Shutting down gracefully...\n");
+    log_info("Shutting down gracefully...");
     
     print_server_statistics();
     
-    printf("[INF] Waiting for active connections to finish...\n");
+    log_info("Waiting for active connections to finish...");
     int wait_count = 0;
     while (server_stats.current_connections > 0 && wait_count < 30) {
         sleep(1);
@@ -529,7 +533,7 @@ int main(int argc, char *argv[]) {
     }
     
     if (server_stats.current_connections > 0) {
-        printf("[WARN] Forcing shutdown with %zu active connections\n", server_stats.current_connections);
+        log_warn("Forcing shutdown with %zu active connections", server_stats.current_connections);
     }
 
 cleanup:

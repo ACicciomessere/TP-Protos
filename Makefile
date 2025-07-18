@@ -11,7 +11,7 @@ OUTPUT_FOLDER=./bin
 
 SERVER_OBJECTS=$(SERVER_SOURCES:src/%.c=obj/%.o) obj/server/main.o
 SERVER_NB_OBJECTS=$(SERVER_NB_SOURCES:src/%.c=obj/%.o) obj/server/main_nonblocking.o
-CLIENT_OBJECTS=$(CLIENT_SOURCES:src/%.c=obj/%.o)
+CLIENT_OBJECTS=$(CLIENT_SOURCES:src/%.c=obj/%.o) obj/logger.o
 SHARED_OBJECTS=$(SHARED_SOURCES:src/%.c=obj/%.o)
 TEST_OBJECTS=$(TEST_SOURCES:src/%.c=obj/%.o)
 

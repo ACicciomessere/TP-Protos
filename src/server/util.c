@@ -49,23 +49,23 @@ const char* printProtocol(struct addrinfo* aip) {
     return "unknown";
 }
 
-void printFlags(struct addrinfo* aip) {
-    printf("flags");
+void printFlags(struct addrinfo* aip, char* buffer, size_t buffer_size) {
+    buffer[0] = '\0';
     if (aip->ai_flags == 0) {
-        printf(" 0");
+        strncat(buffer, " 0", buffer_size - strlen(buffer) - 1);
     } else {
         if (aip->ai_flags & AI_PASSIVE)
-            printf(" passive");
+            strncat(buffer, " passive", buffer_size - strlen(buffer) - 1);
         if (aip->ai_flags & AI_CANONNAME)
-            printf(" canon");
+            strncat(buffer, " canon", buffer_size - strlen(buffer) - 1);
         if (aip->ai_flags & AI_NUMERICHOST)
-            printf(" numhost");
+            strncat(buffer, " numhost", buffer_size - strlen(buffer) - 1);
         if (aip->ai_flags & AI_NUMERICSERV)
-            printf(" numserv");
+            strncat(buffer, " numserv", buffer_size - strlen(buffer) - 1);
         if (aip->ai_flags & AI_V4MAPPED)
-            printf(" v4mapped");
+            strncat(buffer, " v4mapped", buffer_size - strlen(buffer) - 1);
         if (aip->ai_flags & AI_ALL)
-            printf(" all");
+            strncat(buffer, " all", buffer_size - strlen(buffer) - 1);
     }
 }
 
