@@ -13,6 +13,7 @@
 #include "util.h"
 #include "../shared/shared.h"
 #include "../logger.h"
+#include "../pop3_sniffer.h"
 
 #define READ_BUFFER_SIZE 2048
 #define MAX_HOSTNAME_LENGTH 255
@@ -263,7 +264,8 @@ int handleClient(int clientSocket, struct socks5args* args) {
     // Ahora el cliente puede empezar a enviar solicitudes
 
     struct addrinfo* connectAddresses;
-    if (handleRequest(clientSocket, &connectAddresses))
+    int dest_port = 0;
+    if (handleRequest(clientSocket, &connectAddresses, &dest_port))
         return -1;
 
      // Ahora nos podemos conectar al servidor solicitado
@@ -278,7 +280,7 @@ int handleClient(int clientSocket, struct socks5args* args) {
         mgmt_update_user_stats(authenticated_user, 0, 1);
     }
 
-    int status = handleConnectionData(clientSocket, remoteSocket, authenticated_user);
+    int status = handleConnectionData(clientSocket, remoteSocket, authenticated_user, dest_port);
     
     if (authenticated_user[0] != '\0') {
         mgmt_update_user_stats(authenticated_user, 0, -1);
@@ -375,7 +377,7 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authe
     }
 }
 
-int handleRequest(int clientSocket, struct addrinfo** connectAddresses) {
+int handleRequest(int clientSocket, struct addrinfo** connectAddresses, int* dest_port) {
     ssize_t received;
     char receiveBuffer[READ_BUFFER_SIZE + 1];
 
@@ -458,6 +460,11 @@ int handleRequest(int clientSocket, struct addrinfo** connectAddresses) {
     }
 
     log_info("Client asked to connect to: %s:%d", hostname, port);
+
+    // Store destination port for POP3 sniffing
+    if (dest_port) {
+        *dest_port = port;
+    }
 
     char service[6] = {0};
     sprintf(service, "%d", port);
@@ -746,7 +753,7 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
     return 0;
 }
 
-int handleConnectionData(int clientSocket, int remoteSocket, const char* authenticated_user) {
+int handleConnectionData(int clientSocket, int remoteSocket, const char* authenticated_user, int dest_port) {
     ssize_t received;
     char receiveBuffer[4096];
 
@@ -789,6 +796,12 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
                 alive = 0;
             } else {
                 int otherSocket = pollFds[i].fd == clientSocket ? remoteSocket : clientSocket;
+                
+                // Check if this is client->server traffic on POP3 port (110)
+                if (dest_port == 110 && pollFds[i].fd == clientSocket) {
+                    pop3_sniffer_process((const uint8_t*)receiveBuffer, received);
+                }
+                
                 ssize_t sent = sendFull(otherSocket, receiveBuffer, received, 0);
                 if (sent != received) {
                     log_error("Failed to send all data: sent %zd/%zd bytes", sent, received);

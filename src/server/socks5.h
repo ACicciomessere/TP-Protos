@@ -35,8 +35,8 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authe
 int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args, char* authenticated_user);
 int validateUser(const char* username, const char* password, struct socks5args* args);
 
-int handleRequest(int clientSocket, struct addrinfo** addressConnectTo);
+int handleRequest(int clientSocket, struct addrinfo** addressConnectTo, int* dest_port);
 int handleConnectAndReply(int clientSocket, struct addrinfo** addressConnectTo, int* remoteSocket);
-int handleConnectionData(int clientSocket, int remoteSocket, const char* authenticated_user);
+int handleConnectionData(int clientSocket, int remoteSocket, const char* authenticated_user, int dest_port);
 
 #endif
