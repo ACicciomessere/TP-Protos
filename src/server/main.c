@@ -17,6 +17,7 @@
 #include "../args.h"
 
 #define MAX_PENDING_CONNECTION_REQUESTS 5
+#define TEST_SOCKS5_REPLY 1 
 
 // Manejar señal SIGCHLD para evitar procesos zombie
 void sigchld_handler(int sig) {
@@ -41,6 +42,15 @@ void handle_management_connection(int client_sock) {
 // Función para manejar conexiones SOCKS5
 void handle_socks5_connection(int client_sock, struct socks5args* args) {
     printf("[INF] Handling SOCKS5 connection\n");
+
+
+    #if TEST_SOCKS5_REPLY
+        printf("[TEST] Enviando respuesta SOCKS5 de error (REPLY_CONNECTION_REFUSED)\n");
+        send_socks5_reply(client_sock, REPLY_CONNECTION_REFUSED);
+        close(client_sock);
+        return;
+    #endif
+
     
     // Actualizar estadísticas - nueva conexión
     mgmt_update_stats(0, 1);

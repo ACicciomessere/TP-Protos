@@ -174,12 +174,12 @@ void show_stats(void) {
         
         // General proxy statistics
         printf("📊 GENERAL STATISTICS:\n");
-        printf("  • Total connections: %llu\n", response.stats.total_connections);
-        printf("  • Current connections: %llu\n", response.stats.current_connections);
-        printf("  • Peak concurrent connections: %llu\n", response.stats.peak_concurrent_connections);
+        printf("  • Total connections: %lu\n", response.stats.total_connections);
+        printf("  • Current connections: %lu\n", response.stats.current_connections);
+        printf("  • Peak concurrent connections: %lu\n", response.stats.peak_concurrent_connections);
         
-        printf("  • Bytes transferred (total): %llu\n", response.stats.total_bytes_transferred);
-        printf("  • Bytes transferred (session): %llu\n", response.stats.current_bytes_transferred);
+        printf("  • Bytes transferred (total): %lu\n", response.stats.total_bytes_transferred);
+        printf("  • Bytes transferred (session): %lu\n", response.stats.current_bytes_transferred);
         
         // Show number of configured users
         printf("  • Configured users: %d\n", response.user_count);
@@ -197,7 +197,7 @@ void show_stats(void) {
         
         if (response.stats.total_connections > 0) {
             uint64_t avg_bytes = response.stats.total_bytes_transferred / response.stats.total_connections;
-            printf("  • Average per connection: %llu bytes\n", avg_bytes);
+            printf("  • Average per connection: %lu bytes\n", avg_bytes);
         }
         
         printf("\n═══════════════════════════════════════════════════════════════\n");
