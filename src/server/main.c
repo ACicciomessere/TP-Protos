@@ -1,6 +1,7 @@
 // This is a personal academic project. Dear PVS-Studio, please check it.
 // PVS-Studio Static Code Analyzer for C, C++ and C#: http://www.viva64.com
 
+#include <fcntl.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -226,6 +227,12 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
+            // SET NON-BLOCKING
+            int flags = fcntl(clientSocket, F_GETFL, 0);
+            if (flags < 0 || fcntl(clientSocket, F_SETFL, flags | O_NONBLOCK) < 0) {
+                log_error("fcntl() failed to set non-blocking mode: %s", strerror(errno));
+            }
+
             char addrBuffer[128];
             printSocketAddress((struct sockaddr*)&clientAddress, addrBuffer);
             log_info("New SOCKS5 connection from %s", addrBuffer);
@@ -243,6 +250,12 @@ int main(int argc, char* argv[]) {
             if (clientSocket < 0) {
                 log_error("accept() on management socket: %s", strerror(errno));
                 continue;
+            }
+
+            // SET NON-BLOCKING
+            int flags = fcntl(clientSocket, F_GETFL, 0);
+            if (flags < 0 || fcntl(clientSocket, F_SETFL, flags | O_NONBLOCK) < 0) {
+                log_error("fcntl() failed to set non-blocking mode: %s", strerror(errno));
             }
 
             char addrBuffer[128];
