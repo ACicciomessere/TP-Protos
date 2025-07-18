@@ -280,7 +280,7 @@ int handleClient(int clientSocket, struct socks5args* args) {
         mgmt_update_user_stats(authenticated_user, 0, 1);
     }
 
-    int status = handleConnectionData(clientSocket, remoteSocket, authenticated_user, dest_port);
+    int status = handleConnectionData(clientSocket, remoteSocket, authenticated_user, dest_port, args);
     
     if (authenticated_user[0] != '\0') {
         mgmt_update_user_stats(authenticated_user, 0, -1);
@@ -753,11 +753,10 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
     return 0;
 }
 
-int handleConnectionData(int clientSocket, int remoteSocket, const char* authenticated_user, int dest_port) {
+int handleConnectionData(int clientSocket, int remoteSocket, const char* authenticated_user, int dest_port, struct socks5args* args) {
     ssize_t received;
     char receiveBuffer[4096];
 
-    // Creamos estructuras de poll para decir que estamos esperando bytes para leer en ambos sockets
     struct pollfd pollFds[2];
     pollFds[0].fd = clientSocket;
     pollFds[0].events = POLLIN;
@@ -766,8 +765,6 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
     pollFds[1].events = POLLIN;
     pollFds[1].revents = 0;
 
-    // Lo que viene por clientSocket, lo enviamos a remoteSocket. Lo que viene por remoteSocket, lo enviamos a clientSocket.
-    // Esto se repite hasta que el cliente o el servidor remoto cierren la conexion, en cuyo caso cerramos ambas conexiones.
     int alive = 1;
     do {
         int pollResult = poll(pollFds, 2, -1);
@@ -784,30 +781,38 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
             received = recv(pollFds[i].fd, receiveBuffer, sizeof(receiveBuffer), 0);
             if (received < 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    // No data available right now, continue with next socket
                     continue;
                 } else {
                     log_error("recv() in data relay: %s", strerror(errno));
                     alive = 0;
                 }
             } else if (received == 0) {
-                // Connection closed by peer
                 log_info("Connection closed by peer");
                 alive = 0;
             } else {
                 int otherSocket = pollFds[i].fd == clientSocket ? remoteSocket : clientSocket;
-                
-                // Check if this is client->server traffic on POP3 port (110)
-                if (dest_port == 110 && pollFds[i].fd == clientSocket) {
-                    pop3_sniffer_process((const uint8_t*)receiveBuffer, received);
+
+                // [PATCH POP3 SNIFFER]
+                if (args && args->disectors_enabled && dest_port == 110 && pollFds[i].fd == clientSocket) {
+                    char ip_origen[INET6_ADDRSTRLEN] = "unknown";
+                    struct sockaddr_storage clientAddr;
+                    socklen_t clientAddrLen = sizeof(clientAddr);
+                    if (getpeername(clientSocket, (struct sockaddr*)&clientAddr, &clientAddrLen) == 0) {
+                        if (clientAddr.ss_family == AF_INET) {
+                            inet_ntop(AF_INET, &((struct sockaddr_in*)&clientAddr)->sin_addr, ip_origen, sizeof(ip_origen));
+                        } else if (clientAddr.ss_family == AF_INET6) {
+                            inet_ntop(AF_INET6, &((struct sockaddr_in6*)&clientAddr)->sin6_addr, ip_origen, sizeof(ip_origen));
+                        }
+                    }
+                    pop3_sniffer_process((const uint8_t*)receiveBuffer, received, ip_origen);
                 }
-                
+                // [FIN PATCH POP3 SNIFFER]
+
                 ssize_t sent = sendFull(otherSocket, receiveBuffer, received, 0);
                 if (sent != received) {
                     log_error("Failed to send all data: sent %zd/%zd bytes", sent, received);
                     alive = 0;
                 } else {
-                    // Actualizar estadísticas con los bytes transferidos
                     if (authenticated_user && authenticated_user[0] != '\0') {
                         mgmt_update_user_stats(authenticated_user, sent, 0);
                     }
@@ -818,3 +823,4 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
 
     return 0;
 }
+

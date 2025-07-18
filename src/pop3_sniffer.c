@@ -8,7 +8,7 @@ static char user[256] = {0};
 static char pass[256] = {0};
 
 // Busca comandos USER y PASS en el tráfico plano y los loguea si ambos están presentes
-void pop3_sniffer_process(const uint8_t *data, size_t len) {
+void pop3_sniffer_process(const uint8_t *data, size_t len, const char *ip_origen) {
     if (len == 0 || data == NULL) return;
 
     // Copia los datos en un string null-terminated (para poder usar strstr)
