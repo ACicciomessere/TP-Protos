@@ -128,13 +128,15 @@ int main(int argc, char* argv[]) {
     // Show configured users
     int userCount = 0;
     for (int i = 0; i < MAX_USERS; i++) {
-        if (args.users[i].name[0] != '\0' && args.users[i].pass[0] != '\0') {
+        if (args.users[i].name && args.users[i].pass &&
+            args.users[i].name[0] != '\0' && args.users[i].pass[0] != '\0') {
             userCount++;
         }
     }
     printf("  Configured users: %d\n", userCount);
     for (int i = 0; i < MAX_USERS; i++) {
-        if (args.users[i].name[0] != '\0' && args.users[i].pass[0] != '\0') {
+        if (args.users[i].name && args.users[i].pass &&
+            args.users[i].name[0] != '\0' && args.users[i].pass[0] != '\0') {
             printf("    - %s\n", args.users[i].name);
         }
     }

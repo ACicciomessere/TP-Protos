@@ -7,12 +7,68 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 
 // Puntero a datos compartidos
 static shared_data_t* g_shared_data = NULL;
 
+// Persistencia de usuarios en un archivo sencillo
+#define USERS_PERSIST_FILE "auth.db"
+
+// Forward declaration para usar antes de su definición real
+static int add_user(const char* username, const char* password);
+
 void sayHello(void) {
     printf("Hello!\n");
+}
+
+// Guarda los usuarios activos al disco
+static void save_users_to_file(void) {
+    if (g_shared_data == NULL) return;
+    FILE* f = fopen(USERS_PERSIST_FILE, "w");
+    if (!f) { perror("Opening users file for write"); return; }
+
+    pthread_mutex_lock(&g_shared_data->users_mutex);
+    for (int i = 0; i < g_shared_data->user_count; i++) {
+        if (g_shared_data->users[i].active) {
+            fprintf(f, "%s:%s\n", g_shared_data->users[i].username,
+                             g_shared_data->users[i].password);
+        }
+    }
+    pthread_mutex_unlock(&g_shared_data->users_mutex);
+    fclose(f);
+}
+
+// Carga los usuarios desde disco (si el archivo existe)
+static void load_users_from_file(void) {
+    if (g_shared_data == NULL) return;
+    FILE* f = fopen(USERS_PERSIST_FILE, "r");
+    if (!f) return; // No hay archivo, no es un error
+
+    char line[MAX_USERNAME_LEN + MAX_PASSWORD_LEN + 2]; // username:pass\n\0
+    while (fgets(line, sizeof(line), f)) {
+        // Remover salto de linea
+        char* nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        char* sep = strchr(line, ':');
+        if (!sep) continue;
+        *sep = '\0';
+        const char* username = line;
+        const char* password = sep + 1;
+
+        pthread_mutex_lock(&g_shared_data->users_mutex);
+        if (g_shared_data->user_count < MAX_USERS) {
+            int slot = g_shared_data->user_count;
+            strncpy(g_shared_data->users[slot].username, username, MAX_USERNAME_LEN - 1);
+            strncpy(g_shared_data->users[slot].password, password, MAX_PASSWORD_LEN - 1);
+            g_shared_data->users[slot].username[MAX_USERNAME_LEN - 1] = '\0';
+            g_shared_data->users[slot].password[MAX_PASSWORD_LEN - 1] = '\0';
+            g_shared_data->users[slot].active = 1;
+            g_shared_data->user_count = slot + 1;
+        }
+        pthread_mutex_unlock(&g_shared_data->users_mutex);
+    }
+    fclose(f);
 }
 
 // Inicializar memoria compartida
@@ -41,7 +97,13 @@ int mgmt_init_shared_memory(void) {
     pthread_mutex_init(&g_shared_data->stats_mutex, &attr);
     
     pthread_mutexattr_destroy(&attr);
-    
+
+    // Cargar usuarios persistidos, si existen
+    load_users_from_file();
+
+    // Aseguramos que exista el usuario por defecto "admin:admin"
+    add_user("admin", "admin");
+
     printf("[INF] Shared memory initialized\n");
     return 0;
 }
@@ -107,6 +169,9 @@ static int add_user(const char* username, const char* password) {
     }
     
     pthread_mutex_unlock(&g_shared_data->users_mutex);
+
+    // Persistir cambios
+    save_users_to_file();
     return 0;
 }
 
@@ -124,6 +189,9 @@ static int delete_user(const char* username) {
     memset(&g_shared_data->users[index], 0, sizeof(user_t));
     
     pthread_mutex_unlock(&g_shared_data->users_mutex);
+
+    // Persistir cambios
+    save_users_to_file();
     return 0;
 }
 

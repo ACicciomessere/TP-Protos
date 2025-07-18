@@ -135,20 +135,40 @@ static ssize_t sendFull(int fd, const void* buf, size_t n, int flags) {
 }
 
 int validateUser(const char* username, const char* password, struct socks5args* args) {
-    if (!username || !password || !args) {
+    if (!username || !password) {
         return 0;
     }
-    
-    for (int i = 0; i < MAX_USERS; i++) {
-        if (args->users[i].name[0] != '\0' && args->users[i].pass[0] != '\0') {
-            if (strcmp(username, args->users[i].name) == 0 && 
-                strcmp(password, args->users[i].pass) == 0) {
-                log_access(username, "AUTH_SUCCESS", "User authenticated successfully");
+
+    // 1) Verificamos usuarios cargados dinámicamente en memoria compartida
+    shared_data_t* sh = mgmt_get_shared_data();
+    if (sh) {
+        pthread_mutex_lock(&sh->users_mutex);
+        for (int i = 0; i < sh->user_count; i++) {
+            if (sh->users[i].active &&
+                strcmp(username, sh->users[i].username) == 0 &&
+                strcmp(password, sh->users[i].password) == 0) {
+                pthread_mutex_unlock(&sh->users_mutex);
+                log_access(username, "AUTH_SUCCESS", "User authenticated successfully (shared)");
                 return 1;
             }
         }
+        pthread_mutex_unlock(&sh->users_mutex);
     }
-    
+
+    // 2) Verificamos usuarios provistos por línea de comandos (args)
+    if (args) {
+        for (int i = 0; i < MAX_USERS; i++) {
+            if (args->users[i].name && args->users[i].pass &&
+                args->users[i].name[0] != '\0' && args->users[i].pass[0] != '\0') {
+                if (strcmp(username, args->users[i].name) == 0 &&
+                    strcmp(password, args->users[i].pass) == 0) {
+                    log_access(username, "AUTH_SUCCESS", "User authenticated successfully (args)");
+                    return 1;
+                }
+            }
+        }
+    }
+
     log_access(username, "AUTH_FAIL", "Authentication failed for user");
     return 0;
 }
@@ -300,13 +320,24 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authe
         log_info("%02x%s", receiveBuffer[i], i + 1 == nmethods ? "\n" : ", ");
     }
     
-    // Chequeamos si tenemos usuarios configurados
+    // Chequeamos si tenemos usuarios configurados en args
     if (args) {
-        for (int i = 0; i < MAX_USERS; i++) {
-            if (args->users[i].name[0] != '\0' && args->users[i].pass[0] != '\0') {
+        for (int i = 0; i < MAX_USERS && !hasUsersConfigured; i++) {
+            if (args->users[i].name && args->users[i].pass &&
+                args->users[i].name[0] != '\0' && args->users[i].pass[0] != '\0') {
                 hasUsersConfigured = 1;
-                break;
             }
+        }
+    }
+    // Si no encontramos, chequeamos memoria compartida
+    if (!hasUsersConfigured) {
+        shared_data_t* sh = mgmt_get_shared_data();
+        if (sh) {
+            pthread_mutex_lock(&sh->users_mutex);
+            for (int i = 0; i < sh->user_count; i++) {
+                if (sh->users[i].active) { hasUsersConfigured = 1; break; }
+            }
+            pthread_mutex_unlock(&sh->users_mutex);
         }
     }
     
