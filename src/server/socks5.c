@@ -275,13 +275,13 @@ int handleClient(int clientSocket, struct socks5args* args) {
         // Se establece la conexion, a partir de aca el cliente y el server pueden comunicarse
         // Si tenemos un usuario autenticado, ademas tenemos q actualizar sus estadisticas de conexion
     if (authenticated_user[0] != '\0') {
-        mgmt_update_user_stats(authenticated_user, 0, 1); 
+        mgmt_update_user_stats(authenticated_user, 0, 1);
     }
 
     int status = handleConnectionData(clientSocket, remoteSocket, authenticated_user);
     
     if (authenticated_user[0] != '\0') {
-        mgmt_update_user_stats(authenticated_user, 0, -1); 
+        mgmt_update_user_stats(authenticated_user, 0, -1);
     }
     
     close(remoteSocket);
@@ -797,8 +797,6 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
                     // Actualizar estadísticas con los bytes transferidos
                     if (authenticated_user && authenticated_user[0] != '\0') {
                         mgmt_update_user_stats(authenticated_user, sent, 0);
-                    } else {
-                        mgmt_update_stats(sent, 0);
                     }
                 }
             }

@@ -46,18 +46,11 @@ void handle_socks5_connection(int client_sock, struct socks5args* args) {
         close(client_sock);
         return;
     #endif
-
-    
-    // Actualizar estadísticas - nueva conexión
-    mgmt_update_stats(0, 1);
     
     int result = handleClient(client_sock, args);
     if (result < 0) {
         log_error("Error handling SOCKS5 client");
     }
-    
-    // Actualizar estadísticas - conexión cerrada
-    mgmt_update_stats(0, -1);
     
     close(client_sock);
     log_info("SOCKS5 connection closed");
