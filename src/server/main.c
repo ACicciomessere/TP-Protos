@@ -6,10 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <signal.h>
-#include <pthread.h>
 
 #include "socks5.h"
 #include "util.h"
@@ -19,10 +17,7 @@
 
 #define MAX_PENDING_CONNECTION_REQUESTS 5
 
-// Manejar señal SIGCHLD para evitar procesos zombie
-void sigchld_handler(int sig) {
-    while (waitpid(-1, NULL, WNOHANG) > 0);
-}
+// Note: SIGCHLD handler removed since we no longer use fork()
 
 // Manejar señal SIGTERM y SIGINT para limpieza
 void cleanup_handler(int sig);
@@ -41,7 +36,17 @@ void handle_management_connection(int client_sock) {
 
 // Función para manejar conexiones SOCKS5
 void handle_socks5_connection(int client_sock, struct socks5args* args) {
-    log_info("Handling SOCKS5 connection");
+    printf("[INF] Handling SOCKS5 connection\n");
+
+
+    // Disabled test mode to enable proper SOCKS5 functionality
+    #if 0
+        printf("[TEST] Enviando respuesta SOCKS5 de error (REPLY_CONNECTION_REFUSED)\n");
+        send_socks5_reply(client_sock, REPLY_CONNECTION_REFUSED);
+        close(client_sock);
+        return;
+    #endif
+
     
     // Actualizar estadísticas - nueva conexión
     mgmt_update_stats(0, 1);
@@ -146,8 +151,7 @@ int main(int argc, char* argv[]) {
         exit(1);
     }
 
-    // Configurar manejador de señales para evitar procesos zombie
-    signal(SIGCHLD, sigchld_handler);
+    // Note: SIGCHLD handler removed since we no longer use fork()
 
     // Configurar manejador de señales para limpieza
     signal(SIGTERM, cleanup_handler);
@@ -224,21 +228,8 @@ int main(int argc, char* argv[]) {
             printSocketAddress((struct sockaddr*)&clientAddress, addrBuffer);
             log_info("New SOCKS5 connection from %s", addrBuffer);
 
-            // Crear proceso hijo para manejar la conexión
-            pid_t pid = fork();
-            if (pid == 0) {
-                // Proceso hijo
-                close(socks5Socket);
-                close(mgmtSocket);
-                handle_socks5_connection(clientSocket, &args);
-                exit(0);
-            } else if (pid > 0) {
-                // Proceso padre
-                close(clientSocket);
-            } else {
-                log_error("fork() for SOCKS5 connection: %s", strerror(errno));
-                close(clientSocket);
-            }
+            // Handle SOCKS5 connection directly in main thread (no fork)
+            handle_socks5_connection(clientSocket, &args);
         }
 
         // Verificar socket de gestión
@@ -256,21 +247,8 @@ int main(int argc, char* argv[]) {
             printSocketAddress((struct sockaddr*)&clientAddress, addrBuffer);
             log_info("New management connection from %s", addrBuffer);
 
-            // Crear proceso hijo para manejar la conexión
-            pid_t pid = fork();
-            if (pid == 0) {
-                // Proceso hijo
-                close(socks5Socket);
-                close(mgmtSocket);
-                handle_management_connection(clientSocket);
-                exit(0);
-            } else if (pid > 0) {
-                // Proceso padre
-                close(clientSocket);
-            } else {
-                log_error("fork() for management connection: %s", strerror(errno));
-                close(clientSocket);
-            }
+            // Handle management connection directly in main thread (no fork)
+            handle_management_connection(clientSocket);
         }
     }
 
