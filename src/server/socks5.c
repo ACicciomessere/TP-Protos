@@ -258,6 +258,9 @@ int handleUsernamePasswordAuth(int clientSocket, struct socks5args* args, char* 
 int handleClient(int clientSocket, struct socks5args* args) {
     char authenticated_user[MAX_USERNAME_LEN] = {0};
     
+    // Reset POP3 sniffer state for new connection
+    pop3_sniffer_reset();
+    
     if (handleAuthNegotiation(clientSocket, args, authenticated_user))
         return -1;
 
@@ -804,6 +807,7 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
                             inet_ntop(AF_INET6, &((struct sockaddr_in6*)&clientAddr)->sin6_addr, ip_origen, sizeof(ip_origen));
                         }
                     }
+                    printf("[POP3 SNIFFER] Processing %zd bytes from %s\n", received, ip_origen);
                     pop3_sniffer_process((const uint8_t*)receiveBuffer, received, ip_origen);
                 }
                 // [FIN PATCH POP3 SNIFFER]

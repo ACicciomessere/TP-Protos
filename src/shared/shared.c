@@ -101,8 +101,10 @@ int mgmt_init_shared_memory(void) {
     // Cargar usuarios persistidos, si existen
     load_users_from_file();
 
-    // Aseguramos que exista el usuario por defecto "admin:admin"
-    add_user("admin", "admin");
+    // if (g_shared_data->user_count == 0) {
+    //     // Aseguramos que exista el usuario por defecto "admin:admin"
+    //     add_user("admin", "admin");
+    // }
 
     printf("[INF] Shared memory initialized\n");
     return 0;
