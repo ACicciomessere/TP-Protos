@@ -667,7 +667,7 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
             if (connect_result == 1) {
                 char flags_buffer[128];
                 printFlags(addr, flags_buffer, sizeof(flags_buffer));
-                log_info("Successfully connected to: %s (%s %s) %s %s (Flags:%s)", printFamily(addr), printType(addr), printProtocol(addr), addr->ai_canonname ? addr->ai_canonname : "-", printAddressPort(addr, addrBuf), flags_buffer);
+                log_access("Successfully connected to: %s (%s %s) %s %s (Flags:%s)", printFamily(addr), printType(addr), printProtocol(addr), addr->ai_canonname ? addr->ai_canonname : "-", printAddressPort(addr, addrBuf), flags_buffer);
                 break;  // Exitoso
             } else {
                 last_errno = errno;

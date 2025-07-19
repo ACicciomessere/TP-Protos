@@ -78,8 +78,13 @@ void logger_log(log_level level, const char *file, int line, const char *fmt, ..
     va_end(args);
 
     // Print to log file
-    fprintf(L.file, "%s [%-5s] %s:%d: %s\n",
-            timestamp, level_strings[level], file, line, msg_buf);
+    if (level == LOG_INFO) {
+        fprintf(L.file, "%s [%-5s] %s\n",
+                timestamp, level_strings[level], msg_buf);
+    } else {
+        fprintf(L.file, "%s [%-5s] %s:%d: %s\n",
+                timestamp, level_strings[level], file, line, msg_buf);
+    }
     fflush(L.file);
 
     pthread_mutex_unlock(&L.mutex);
