@@ -68,6 +68,7 @@ void remove_client(int i, fd_set *master_set) {
         close(clients[i].remote_fd);
         FD_CLR(clients[i].remote_fd, master_set);
     }
+    mgmt_update_stats(0, -1);
     clients[i].client_fd = -1;
     clients[i].remote_fd = -1;
     clients[i].state = STATE_DONE;
@@ -110,6 +111,9 @@ void relay_data(int from_fd, int to_fd, int client_index) {
         return;
     }
     ssize_t nwritten = send(to_fd, buffer, nread, 0);
+    if (nwritten > 0) {
+        mgmt_update_stats(nwritten, 0);
+    }
     if (nwritten < 0) {
         printf("[ERR] Send error in relay (client=%d)\n", clients[client_index].client_fd);
         log_error("Send error in relay (client=%d)", clients[client_index].client_fd);
@@ -123,6 +127,12 @@ int main(int argc, char **argv) {
     logger_init(LOG_INFO, "metrics.log");
     atexit(logger_close);
 
+    // Inicializar memoria compartida
+    if (mgmt_init_shared_memory() < 0) {
+        log_fatal("Failed to initialize shared memory");
+        return 1;
+    }
+
     printf("[INF] Iniciando servidor SOCKS5...\n");
 
     int server_fd = create_server_socket(args.socks_port);
@@ -131,6 +141,16 @@ int main(int argc, char **argv) {
         return 1;
     }
     set_nonblocking(server_fd);
+
+    // Iniciar servidor de gestion
+    int mgmt_fd = mgmt_server_start(args.mng_port);
+    if (mgmt_fd < 0) {
+        log_error("Failed to start management server");
+        close(server_fd);
+        return 1;
+    }
+    set_nonblocking(mgmt_fd);
+
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
         clients[i].client_fd = -1;
@@ -141,7 +161,8 @@ int main(int argc, char **argv) {
     fd_set master_set, read_set, write_set;
     FD_ZERO(&master_set);
     FD_SET(server_fd, &master_set);
-    int fdmax = server_fd;
+    FD_SET(mgmt_fd, &master_set);
+    int fdmax = (server_fd > mgmt_fd) ? server_fd : mgmt_fd;
 
     signal(SIGINT, cleanup_handler);
 
@@ -174,11 +195,23 @@ int main(int argc, char **argv) {
                     if (client_fd > fdmax) fdmax = client_fd;
                     printf("[INF] Accepted new client (fd=%d)\n", client_fd);
                     log_info("Accepted new client (fd=%d)", client_fd);
+                    mgmt_update_stats(0, 1);
                 } else {
                     printf("[ERR] Too many clients, rejecting fd=%d\n", client_fd);
                     log_error("Too many clients");
                     close(client_fd);
                 }
+            }
+        }
+
+        if (FD_ISSET(mgmt_fd, &read_set)) {
+            int mgmt_client_fd = accept(mgmt_fd, NULL, NULL);
+            if (mgmt_client_fd >= 0) {
+                // Manejar la conexión del cliente de gestión en un hilo o proceso separado
+                // para no bloquear el bucle principal.
+                // Por simplicidad aquí lo manejamos directamente, pero podría bloquear.
+                mgmt_handle_client(mgmt_client_fd);
+                close(mgmt_client_fd);
             }
         }
 
@@ -237,6 +270,7 @@ int main(int argc, char **argv) {
 
     printf("[INF] Server exiting...\n");
     close(server_fd);
+    close(mgmt_fd);
     mgmt_cleanup_shared_memory();
     return 0;
 }
