@@ -144,7 +144,25 @@ int validateUser(const char* username, const char* password, struct socks5args* 
         return 0;
     }
 
-    // 1) Verificamos usuarios cargados dinámicamente en memoria compartida
+    // 1) Verificamos usuarios desde el archivo auth.db
+    FILE* file = fopen("auth.db", "r");
+    if (file != NULL) {
+        char line[512];
+        while (fgets(line, sizeof(line), file)) {
+            char* db_user = strtok(line, ":");
+            char* db_pass = strtok(NULL, "\n");
+            if (db_user && db_pass) {
+                if (strcmp(username, db_user) == 0 && strcmp(password, db_pass) == 0) {
+                    fclose(file);
+                    log_access(username, "AUTH_SUCCESS", "User authenticated successfully (auth.db)");
+                    return 1;
+                }
+            }
+        }
+        fclose(file);
+    }
+
+    // 2) Verificamos usuarios cargados dinámicamente en memoria compartida
     shared_data_t* sh = mgmt_get_shared_data();
     if (sh) {
         pthread_mutex_lock(&sh->users_mutex);
@@ -160,7 +178,7 @@ int validateUser(const char* username, const char* password, struct socks5args* 
         pthread_mutex_unlock(&sh->users_mutex);
     }
 
-    // 2) Verificamos usuarios provistos por línea de comandos (args)
+    // 3) Verificamos usuarios provistos por línea de comandos (args)
     if (args) {
         for (int i = 0; i < MAX_USERS; i++) {
             if (args->users[i].name && args->users[i].pass &&
@@ -671,7 +689,7 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
             if (connect_result == 1) {
                 char flags_buffer[128];
                 printFlags(addr, flags_buffer, sizeof(flags_buffer));
-                log_access("Successfully connected to: %s (%s %s) %s %s (Flags:%s)", printFamily(addr), printType(addr), printProtocol(addr), addr->ai_canonname ? addr->ai_canonname : "-", printAddressPort(addr, addrBuf), flags_buffer);
+                log_info("Successfully connected to: %s (%s %s) %s %s (Flags:%s)", printFamily(addr), printType(addr), printProtocol(addr), addr->ai_canonname ? addr->ai_canonname : "-", printAddressPort(addr, addrBuf), flags_buffer);
                 break;  // Exitoso
             } else {
                 last_errno = errno;
@@ -860,15 +878,12 @@ int socks5_handle_auth(int client_fd, struct socks5args *args) {
     char pass[256] = {0};
     memcpy(pass, &buffer[3 + ulen], plen);
 
-    if (args->auth_method == AUTH_METHOD_USERPASS &&
-        strcmp(user, args->username) == 0 &&
-        strcmp(pass, args->password) == 0) {
-
-        uint8_t response[2] = {0x01, 0x00};
+    if (validateUser(user, pass, args)) {
+        uint8_t response[2] = {0x01, 0x00}; // success
         send(client_fd, response, 2, 0);
         return STATE_REQUEST;
     } else {
-        uint8_t response[2] = {0x01, 0x01};
+        uint8_t response[2] = {0x01, 0x01}; // failure
         send(client_fd, response, 2, 0);
         return -1;
     }
@@ -895,28 +910,41 @@ int socks5_handle_request(int client_fd, struct socks5args *args) {
         dest_addr[len] = '\0';
         dest_port = ntohs(*(uint16_t*)&buffer[5 + len]);
     } else {
+        send_socks5_reply(client_fd, REPLY_ADDRESS_TYPE_NOT_SUPPORTED);
         return -1;
     }
 
+    log_info("Client requested to connect to %s:%d", dest_addr, dest_port);
+
     // conectamos
     struct addrinfo hints = {0}, *res;
-    hints.ai_family = AF_INET;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", dest_port);
-    if (getaddrinfo(dest_addr, port_str, &hints, &res) != 0) return -1;
+    if (getaddrinfo(dest_addr, port_str, &hints, &res) != 0) {
+        log_error("Failed to resolve address: %s", dest_addr);
+        send_socks5_reply(client_fd, REPLY_HOST_UNREACHABLE);
+        return -1;
+    }
 
     int remote_fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (remote_fd < 0) {
+        log_error("Failed to create socket for %s", dest_addr);
         freeaddrinfo(res);
+        send_socks5_reply(client_fd, REPLY_GENERAL_FAILURE);
         return -1;
     }
 
     if (connect(remote_fd, res->ai_addr, res->ai_addrlen) < 0) {
+        log_error("Failed to connect to %s:%d", dest_addr, dest_port);
         close(remote_fd);
         freeaddrinfo(res);
+        send_socks5_reply(client_fd, REPLY_CONNECTION_REFUSED);
         return -1;
     }
+
+    log_info("Successfully connected to %s:%d", dest_addr, dest_port);
 
     freeaddrinfo(res);
 
