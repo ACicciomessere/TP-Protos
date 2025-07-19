@@ -15,6 +15,8 @@
 
 #define SOCKS_VERSION 0x05
 
+#define AUTH_METHOD_USERPASS 0x02
+
 enum socks5_reply {
     REPLY_SUCCEEDED              = 0x00,
     REPLY_GENERAL_FAILURE        = 0x01,
@@ -38,5 +40,9 @@ int validateUser(const char* username, const char* password, struct socks5args* 
 int handleRequest(int clientSocket, struct addrinfo** addressConnectTo, int* dest_port);
 int handleConnectAndReply(int clientSocket, struct addrinfo** addressConnectTo, int* remoteSocket);
 int handleConnectionData(int clientSocket, int remoteSocket, const char* authenticated_user, int dest_port, struct socks5args* args);
+
+int socks5_handle_greeting(int client_fd, struct socks5args *args);
+int socks5_handle_auth(int client_fd, struct socks5args *args);
+int socks5_handle_request(int client_fd, struct socks5args *args);
 
 #endif

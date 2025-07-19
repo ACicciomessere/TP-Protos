@@ -15,11 +15,15 @@
 #include "../logger.h"
 #include "../pop3_sniffer.h"
 
+#define BUFFER_SIZE 1024
 #define READ_BUFFER_SIZE 2048
 #define MAX_HOSTNAME_LENGTH 255
 #define CONNECTION_TIMEOUT_MS 10000  // 10 seconds timeout per connection attempt
 #define RETRY_DELAY_MS 100          // 100ms delay between attempts
 
+#define STATE_AUTH 1
+#define STATE_REQUEST 2
+#define STATE_DONE 3  // o el que necesites como estado final
 
 /**
  * Receives a full buffer of data from a socket, by receiving data until the requested amount
@@ -828,3 +832,98 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
     return 0;
 }
 
+int socks5_handle_greeting(int client_fd, struct socks5args *args) {
+    uint8_t buffer[BUFFER_SIZE];
+    ssize_t n = recv(client_fd, buffer, sizeof(buffer), 0);
+    if (n <= 0) return -1;
+
+    if (buffer[0] != 0x05) return -1; // SOCKS5
+
+    // respondemos con: version 5, método de autenticación 0x02 (username/password)
+    uint8_t response[2] = {0x05, 0x02};
+    send(client_fd, response, 2, 0);
+    return STATE_AUTH;
+}
+
+int socks5_handle_auth(int client_fd, struct socks5args *args) {
+    uint8_t buffer[BUFFER_SIZE];
+    ssize_t n = recv(client_fd, buffer, sizeof(buffer), 0);
+    if (n <= 0) return -1;
+
+    if (buffer[0] != 0x01) return -1; // auth version
+
+    uint8_t ulen = buffer[1];
+    char user[256] = {0};
+    memcpy(user, &buffer[2], ulen);
+
+    uint8_t plen = buffer[2 + ulen];
+    char pass[256] = {0};
+    memcpy(pass, &buffer[3 + ulen], plen);
+
+    if (args->auth_method == AUTH_METHOD_USERPASS &&
+        strcmp(user, args->username) == 0 &&
+        strcmp(pass, args->password) == 0) {
+
+        uint8_t response[2] = {0x01, 0x00};
+        send(client_fd, response, 2, 0);
+        return STATE_REQUEST;
+    } else {
+        uint8_t response[2] = {0x01, 0x01};
+        send(client_fd, response, 2, 0);
+        return -1;
+    }
+}
+
+int socks5_handle_request(int client_fd, struct socks5args *args) {
+    uint8_t buffer[BUFFER_SIZE];
+    ssize_t n = recv(client_fd, buffer, sizeof(buffer), 0);
+    if (n <= 0) return -1;
+
+    if (buffer[0] != 0x05 || buffer[1] != 0x01) return -1; // only CONNECT supported
+
+    uint8_t atyp = buffer[3];
+    char dest_addr[256] = {0};
+    uint16_t dest_port = 0;
+
+    if (atyp == 0x01) { // IPv4
+        memcpy(dest_addr, &buffer[4], 4);
+        inet_ntop(AF_INET, dest_addr, dest_addr, sizeof(dest_addr));
+        dest_port = ntohs(*(uint16_t*)&buffer[8]);
+    } else if (atyp == 0x03) { // domain
+        uint8_t len = buffer[4];
+        memcpy(dest_addr, &buffer[5], len);
+        dest_addr[len] = '\0';
+        dest_port = ntohs(*(uint16_t*)&buffer[5 + len]);
+    } else {
+        return -1;
+    }
+
+    // conectamos
+    struct addrinfo hints = {0}, *res;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    char port_str[6];
+    snprintf(port_str, sizeof(port_str), "%d", dest_port);
+    if (getaddrinfo(dest_addr, port_str, &hints, &res) != 0) return -1;
+
+    int remote_fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (remote_fd < 0) {
+        freeaddrinfo(res);
+        return -1;
+    }
+
+    if (connect(remote_fd, res->ai_addr, res->ai_addrlen) < 0) {
+        close(remote_fd);
+        freeaddrinfo(res);
+        return -1;
+    }
+
+    freeaddrinfo(res);
+
+    // respondemos al cliente
+    uint8_t response[10] = {0x05, 0x00, 0x00, 0x01};
+    memset(&response[4], 0, 6); // BIND addr y port en 0
+    send(client_fd, response, 10, 0);
+
+    return remote_fd; // devolvemos fd remoto válido
+}

@@ -1,203 +1,242 @@
-#include <fcntl.h>
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netdb.h>
 
 #include "socks5.h"
-#include "util.h"
 #include "../logger.h"
-#include "../shared/shared.h"
+#include "util.h"
 #include "../args.h"
+#include "../shared/shared.h"
 
 #define MAX_CLIENTS 1024
+#define BUFFER_SIZE 4096
 #define MAX_PENDING_CONNECTION_REQUESTS 128
 
-struct client {
-    int fd;
+typedef enum {
+    STATE_GREETING,
+    STATE_AUTH,
+    STATE_REQUEST,
+    STATE_CONNECTING,
+    STATE_RELAYING,
+    STATE_DONE,
+    STATE_ERROR
+} client_state;
+
+typedef struct {
+    int client_fd;
+    int remote_fd;
+    client_state state;
     struct sockaddr_storage addr;
     socklen_t addr_len;
-};
+    char buffer[BUFFER_SIZE];
+    int buffer_len;
+    int closed;
+} client_t;
 
-static struct client clients[MAX_CLIENTS];
+client_t clients[MAX_CLIENTS];
 
 void cleanup_handler(int sig) {
-    log_info("Received signal %d, cleaning up...", sig);
+    printf("[SIG] Caught signal %d, cleaning up and exiting.\n", sig);
+    log_info("Signal %d received. Cleaning up...", sig);
     mgmt_cleanup_shared_memory();
     exit(0);
 }
 
-void add_client(int client_fd, struct sockaddr_storage *addr, socklen_t addr_len) {
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].fd == -1) {
-            clients[i].fd = client_fd;
-            clients[i].addr = *addr;
-            clients[i].addr_len = addr_len;
-            return;
-        }
-    }
-    log_error("Too many clients, closing new connection");
-    close(client_fd);
+void set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    printf("[DBG] Set non-blocking mode on fd=%d\n", fd);
 }
 
-void remove_client(int index) {
-    if (clients[index].fd != -1) {
-        close(clients[index].fd);
-        clients[index].fd = -1;
+void remove_client(int i, fd_set *master_set) {
+    if (clients[i].client_fd != -1) {
+        printf("[DBG] Closing client fd=%d\n", clients[i].client_fd);
+        close(clients[i].client_fd);
+        FD_CLR(clients[i].client_fd, master_set);
     }
+    if (clients[i].remote_fd != -1) {
+        printf("[DBG] Closing remote fd=%d\n", clients[i].remote_fd);
+        close(clients[i].remote_fd);
+        FD_CLR(clients[i].remote_fd, master_set);
+    }
+    clients[i].client_fd = -1;
+    clients[i].remote_fd = -1;
+    clients[i].state = STATE_DONE;
 }
 
 int create_server_socket(int port) {
-    int serverSocket = socket(AF_INET6, SOCK_STREAM, 0);
-    if (serverSocket < 0) return -1;
+    printf("[INF] Creating server socket on port %d...\n", port);
+    int sock = socket(AF_INET6, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
 
     int opt = 1;
-    setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     struct sockaddr_in6 addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons(port);
     addr.sin6_addr = in6addr_any;
+    addr.sin6_port = htons(port);
 
-    if (bind(serverSocket, (struct sockaddr*)&addr, sizeof(addr)) < 0)
-        return -1;
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) return -1;
+    if (listen(sock, MAX_PENDING_CONNECTION_REQUESTS) < 0) return -1;
 
-    if (listen(serverSocket, MAX_PENDING_CONNECTION_REQUESTS) < 0)
-        return -1;
-
-    return serverSocket;
+    return sock;
 }
 
-int main(int argc, char* argv[]) {
-    setvbuf(stdout, NULL, _IONBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
+int find_available_client_slot() {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].client_fd == -1) return i;
+    }
+    return -1;
+}
 
+void relay_data(int from_fd, int to_fd, int client_index) {
+    char buffer[BUFFER_SIZE];
+    ssize_t nread = recv(from_fd, buffer, sizeof(buffer), 0);
+    if (nread <= 0) {
+        printf("[DBG] Connection closed in relay (client=%d)\n", clients[client_index].client_fd);
+        log_info("Connection closed in relay (client=%d)", clients[client_index].client_fd);
+        clients[client_index].state = STATE_DONE;
+        return;
+    }
+    ssize_t nwritten = send(to_fd, buffer, nread, 0);
+    if (nwritten < 0) {
+        printf("[ERR] Send error in relay (client=%d)\n", clients[client_index].client_fd);
+        log_error("Send error in relay (client=%d)", clients[client_index].client_fd);
+        clients[client_index].state = STATE_ERROR;
+    }
+}
+
+int main(int argc, char **argv) {
     struct socks5args args;
     parse_args(argc, argv, &args);
-
     logger_init(LOG_INFO, "metrics.log");
     atexit(logger_close);
 
-    printf("  SOCKS5 address: %s:%d\n", args.socks_addr, args.socks_port);
-    printf("  Management address: %s:%d\n", args.mng_addr, args.mng_port);
-    printf("  Disectors enabled: %s\n", args.disectors_enabled ? "yes" : "no");
+    printf("[INF] Iniciando servidor SOCKS5...\n");
 
-    int userCount = 0;
-    for (int i = 0; i < MAX_USERS; i++) {
-        if (args.users[i].name && args.users[i].pass &&
-            args.users[i].name[0] != '\0' && args.users[i].pass[0] != '\0') {
-            userCount++;
-        }
+    int server_fd = create_server_socket(args.socks_port);
+    if (server_fd < 0) {
+        perror("server socket");
+        return 1;
     }
-    printf("  Configured users: %d\n", userCount);
-    for (int i = 0; i < MAX_USERS; i++) {
-        if (args.users[i].name && args.users[i].pass &&
-            args.users[i].name[0] != '\0' && args.users[i].pass[0] != '\0') {
-            printf("    - %s\n", args.users[i].name);
-        }
+    set_nonblocking(server_fd);
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        clients[i].client_fd = -1;
+        clients[i].remote_fd = -1;
+        clients[i].state = STATE_DONE;
     }
 
-    if (userCount > 0) {
-        log_info("Username/password authentication will be required");
-    } else {
-        log_info("No authentication will be required");
-    }
-
-    if (mgmt_init_shared_memory() < 0) exit(1);
-
-    signal(SIGTERM, cleanup_handler);
-    signal(SIGINT, cleanup_handler);
-
-    for (int i = 0; i < MAX_CLIENTS; i++) clients[i].fd = -1;
-
-    int socks5Socket = create_server_socket(args.socks_port);
-    if (socks5Socket < 0) exit(1);
-
-    int mgmtSocket = create_server_socket(args.mng_port);
-    if (mgmtSocket < 0) {
-        close(socks5Socket);
-        exit(1);
-    }
-
-    struct sockaddr_storage boundAddress;
-    socklen_t boundAddressLen = sizeof(boundAddress);
-    char addrBuffer[128];
-
-    if (getsockname(socks5Socket, (struct sockaddr*)&boundAddress, &boundAddressLen) >= 0) {
-        printSocketAddress((struct sockaddr*)&boundAddress, addrBuffer);
-        log_info("SOCKS5 server listening on %s", addrBuffer);
-    }
-    if (getsockname(mgmtSocket, (struct sockaddr*)&boundAddress, &boundAddressLen) >= 0) {
-        printSocketAddress((struct sockaddr*)&boundAddress, addrBuffer);
-        log_info("Management server listening on %s", addrBuffer);
-    }
-
-    fd_set master_set, read_set;
-    int max_fd = socks5Socket > mgmtSocket ? socks5Socket : mgmtSocket;
-
+    fd_set master_set, read_set, write_set;
     FD_ZERO(&master_set);
-    FD_SET(socks5Socket, &master_set);
-    FD_SET(mgmtSocket, &master_set);
+    FD_SET(server_fd, &master_set);
+    int fdmax = server_fd;
 
-    log_info("Server ready, waiting for connections...");
+    signal(SIGINT, cleanup_handler);
 
     while (1) {
         read_set = master_set;
-        if (select(max_fd + 1, &read_set, NULL, NULL, NULL) < 0) {
+        write_set = master_set;
+
+        if (select(fdmax + 1, &read_set, &write_set, NULL, NULL) < 0) {
             if (errno == EINTR) continue;
-            perror("select"); break;
+            perror("select");
+            break;
         }
 
-        if (FD_ISSET(socks5Socket, &read_set)) {
+        if (FD_ISSET(server_fd, &read_set)) {
             struct sockaddr_storage client_addr;
-            socklen_t addr_len = sizeof(client_addr);
-            int client_fd = accept(socks5Socket, (struct sockaddr*)&client_addr, &addr_len);
+            socklen_t addrlen = sizeof(client_addr);
+            int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addrlen);
             if (client_fd >= 0) {
-                fcntl(client_fd, F_SETFL, O_NONBLOCK);
-                FD_SET(client_fd, &master_set);
-                if (client_fd > max_fd) max_fd = client_fd;
-                add_client(client_fd, &client_addr, addr_len);
-                printSocketAddress((struct sockaddr*)&client_addr, addrBuffer);
-                log_info("New SOCKS5 connection from %s", addrBuffer);
-            }
-        }
-
-        if (FD_ISSET(mgmtSocket, &read_set)) {
-            struct sockaddr_storage client_addr;
-            socklen_t addr_len = sizeof(client_addr);
-            int client_fd = accept(mgmtSocket, (struct sockaddr*)&client_addr, &addr_len);
-            if (client_fd >= 0) {
-                fcntl(client_fd, F_SETFL, O_NONBLOCK);
-                printSocketAddress((struct sockaddr*)&client_addr, addrBuffer);
-                log_info("New management connection from %s", addrBuffer);
-                if (mgmt_handle_client(client_fd) < 0) {
-                    log_error("Error handling management client");
+                set_nonblocking(client_fd);
+                int i = find_available_client_slot();
+                if (i >= 0) {
+                    clients[i].client_fd = client_fd;
+                    clients[i].remote_fd = -1;
+                    clients[i].state = STATE_GREETING;
+                    clients[i].addr = client_addr;
+                    clients[i].addr_len = addrlen;
+                    clients[i].buffer_len = 0;
+                    clients[i].closed = 0;
+                    FD_SET(client_fd, &master_set);
+                    if (client_fd > fdmax) fdmax = client_fd;
+                    printf("[INF] Accepted new client (fd=%d)\n", client_fd);
+                    log_info("Accepted new client (fd=%d)", client_fd);
+                } else {
+                    printf("[ERR] Too many clients, rejecting fd=%d\n", client_fd);
+                    log_error("Too many clients");
+                    close(client_fd);
                 }
-                close(client_fd);
-                log_info("Management connection closed");
             }
         }
 
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            int fd = clients[i].fd;
-            if (fd != -1 && FD_ISSET(fd, &read_set)) {
-                printf("[INF] Handling SOCKS5 connection\n");
-                int result = handleClient(fd, &args);
-                FD_CLR(fd, &master_set);
-                remove_client(i);
-                if (result < 0) log_error("Client handler failed (fd=%d)", fd);
-                else log_info("SOCKS5 connection closed");
+            int cfd = clients[i].client_fd;
+            if (cfd == -1) continue;
+
+            if (FD_ISSET(cfd, &read_set) || (clients[i].remote_fd != -1 && FD_ISSET(clients[i].remote_fd, &read_set))) {
+                switch (clients[i].state) {
+                    case STATE_GREETING:
+                        printf("[DBG] Handling GREETING for fd=%d\n", cfd);
+                        log_info("Handling GREETING for fd=%d", cfd);
+                        clients[i].state = socks5_handle_greeting(cfd, &args);
+                        break;
+                    case STATE_AUTH:
+                        printf("[DBG] Handling AUTH for fd=%d\n", cfd);
+                        log_info("Handling AUTH for fd=%d", cfd);
+                        clients[i].state = socks5_handle_auth(cfd, &args);
+                        break;
+                    case STATE_REQUEST:
+                        printf("[DBG] Handling REQUEST for fd=%d\n", cfd);
+                        log_info("Handling REQUEST for fd=%d", cfd);
+                        clients[i].remote_fd = socks5_handle_request(cfd, &args);
+                        if (clients[i].remote_fd >= 0) {
+                            set_nonblocking(clients[i].remote_fd);
+                            FD_SET(clients[i].remote_fd, &master_set);
+                            if (clients[i].remote_fd > fdmax) fdmax = clients[i].remote_fd;
+                            clients[i].state = STATE_RELAYING;
+                        } else {
+                            clients[i].state = STATE_ERROR;
+                        }
+                        break;
+                    case STATE_RELAYING:
+                        if (clients[i].remote_fd != -1 && FD_ISSET(cfd, &read_set)) {
+                            relay_data(cfd, clients[i].remote_fd, i);
+                        }
+                        if (clients[i].remote_fd != -1 && FD_ISSET(clients[i].remote_fd, &read_set)) {
+                            relay_data(clients[i].remote_fd, cfd, i);
+                        }
+                        break;
+                    case STATE_ERROR:
+                        printf("[ERR] Client in error state (fd=%d), closing.\n", cfd);
+                        log_error("Closing client due to error (fd=%d)", cfd);
+                        remove_client(i, &master_set);
+                        break;
+                    case STATE_DONE:
+                        printf("[INF] Client session done (fd=%d), removing.\n", cfd);
+                        remove_client(i, &master_set);
+                        break;
+                    default:
+                        break;
+                }
             }
         }
     }
 
-    close(socks5Socket);
-    close(mgmtSocket);
+    printf("[INF] Server exiting...\n");
+    close(server_fd);
     mgmt_cleanup_shared_memory();
     return 0;
 }

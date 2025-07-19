@@ -23,6 +23,10 @@ struct socks5args
     bool disectors_enabled;
 
     struct users users[MAX_USERS];
+
+    int auth_method;
+    const char *username;
+    const char *password;
 };
 
 /**
