@@ -623,3 +623,21 @@ int mgmt_server_start(int port) {
     printf("[INF] Management server listening on port %d\n", port);
     return server_sock;
 }
+
+
+#include <pthread.h>
+
+// Hilo que acepta conexiones entrantes del servidor de gestión
+void* mgmt_accept_loop(void* arg) {
+    int server_sock = *((int*)arg);
+    while (1) {
+        struct sockaddr_in client_addr;
+        socklen_t addr_len = sizeof(client_addr);
+        int client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &addr_len);
+        if (client_sock >= 0) {
+            mgmt_handle_client(client_sock);
+            close(client_sock);
+        }
+    }
+    return NULL;
+}

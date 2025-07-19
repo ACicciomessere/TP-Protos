@@ -102,6 +102,7 @@ int mgmt_connect_to_server(void);
 int mgmt_send_command(int sock, mgmt_command_t cmd, const char* username, const char* password);
 int mgmt_receive_response(int sock, mgmt_response_t* response);
 void mgmt_close_connection(int sock);
+void* mgmt_accept_loop(void* arg);
 
 // Funciones optimizadas para comunicación específica por comando
 int mgmt_receive_stats_response(int sock, mgmt_stats_response_t* response);

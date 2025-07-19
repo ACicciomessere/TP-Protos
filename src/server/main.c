@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,6 +127,8 @@ int main(int argc, char **argv) {
     parse_args(argc, argv, &args);
     logger_init(LOG_INFO, "metrics.log");
     atexit(logger_close);
+    mgmt_init_shared_memory();    
+
 
     // Inicializar memoria compartida
     if (mgmt_init_shared_memory() < 0) {
@@ -144,11 +147,17 @@ int main(int argc, char **argv) {
 
     // Iniciar servidor de gestion
     int mgmt_fd = mgmt_server_start(args.mng_port);
-    if (mgmt_fd < 0) {
-        log_error("Failed to start management server");
-        close(server_fd);
+        if (mgmt_fd < 0) {
+        log_error("No se pudo iniciar el servidor de gestión");
         return 1;
     }
+    pthread_t mgmt_thread;
+    if (pthread_create(&mgmt_thread, NULL, mgmt_accept_loop, &mgmt_fd) != 0) {
+        log_error("No se pudo crear el hilo de gestión");
+        close(mgmt_fd);
+        return 1;
+    }
+    
     set_nonblocking(mgmt_fd);
 
 
