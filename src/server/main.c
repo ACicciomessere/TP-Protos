@@ -151,13 +151,7 @@ int main(int argc, char **argv) {
         log_error("No se pudo iniciar el servidor de gestión");
         return 1;
     }
-    pthread_t mgmt_thread;
-    if (pthread_create(&mgmt_thread, NULL, mgmt_accept_loop, &mgmt_fd) != 0) {
-        log_error("No se pudo crear el hilo de gestión");
-        close(mgmt_fd);
-        return 1;
-    }
-    
+    // Trabajaremos la gestión en el mismo loop multiplexado (un solo hilo).
     set_nonblocking(mgmt_fd);
 
 
