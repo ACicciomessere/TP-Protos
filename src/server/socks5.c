@@ -901,8 +901,9 @@ int socks5_handle_request(int client_fd, struct socks5args *args) {
     uint16_t dest_port = 0;
 
     if (atyp == 0x01) { // IPv4
-        memcpy(dest_addr, &buffer[4], 4);
-        inet_ntop(AF_INET, dest_addr, dest_addr, sizeof(dest_addr));
+        struct in_addr ipv4_raw;
+        memcpy(&ipv4_raw, &buffer[4], sizeof(ipv4_raw));
+        inet_ntop(AF_INET, &ipv4_raw, dest_addr, sizeof(dest_addr));
         dest_port = ntohs(*(uint16_t*)&buffer[8]);
     } else if (atyp == 0x03) { // domain
         uint8_t len = buffer[4];
