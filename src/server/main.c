@@ -210,9 +210,13 @@ int main(int argc, char **argv) {
         if (FD_ISSET(mgmt_fd, &read_set)) {
             int mgmt_client_fd = accept(mgmt_fd, NULL, NULL);
             if (mgmt_client_fd >= 0) {
-                // Manejar la conexión del cliente de gestión en un hilo o proceso separado
-                // para no bloquear el bucle principal.
-                // Por simplicidad aquí lo manejamos directamente, pero podría bloquear.
+                /* Management protocol uses blocking recv/send loops.
+                 * Clear O_NONBLOCK inherited from the listening socket. */
+                int flags = fcntl(mgmt_client_fd, F_GETFL, 0);
+                if (flags != -1) {
+                    fcntl(mgmt_client_fd, F_SETFL, flags & ~O_NONBLOCK);
+                }
+                // Manejar la conexión del cliente de gestión en el mismo hilo
                 mgmt_handle_client(mgmt_client_fd);
                 close(mgmt_client_fd);
             }
