@@ -95,7 +95,7 @@ int create_server_socket(int port) {
     return sock;
 }
 
-int find_available_client_slot() {
+int find_available_client_slot(void) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].client_fd == -1) return i;
     }

@@ -19,7 +19,14 @@ typedef enum {
     CMD_ADD_USER,
     CMD_DEL_USER,
     CMD_LIST_USERS,
-    CMD_STATS
+    CMD_STATS,
+    CMD_SET_TIMEOUT,
+    CMD_SET_BUFFER,
+    CMD_SET_MAX_CLIENTS,
+    CMD_ENABLE_DISSECTORS,
+    CMD_DISABLE_DISSECTORS,
+    CMD_RELOAD_CONFIG,
+    CMD_GET_CONFIG
 } mgmt_command_t;
 
 // Estructura para estadísticas por usuario
@@ -97,6 +104,16 @@ typedef struct {
     char message[MAX_MESSAGE_LEN];
 } mgmt_simple_response_t;
 
+// Respuesta de configuración actual
+typedef struct {
+    int success;
+    char message[MAX_MESSAGE_LEN];
+    int timeout_ms;
+    int buffer_size;
+    int max_clients;
+    int dissectors_enabled; // 1 habilitado, 0 deshabilitado
+} mgmt_config_response_t;
+
 // Funciones para comunicación cliente-servidor
 int mgmt_connect_to_server(void);
 int mgmt_send_command(int sock, mgmt_command_t cmd, const char* username, const char* password);
@@ -108,6 +125,8 @@ void* mgmt_accept_loop(void* arg);
 int mgmt_receive_stats_response(int sock, mgmt_stats_response_t* response);
 int mgmt_receive_users_response(int sock, mgmt_users_response_t* response);
 int mgmt_receive_simple_response(int sock, mgmt_simple_response_t* response);
+int mgmt_receive_config_response(int sock, mgmt_config_response_t* response);
+int mgmt_send_config_response(int sock, mgmt_config_response_t* response);
 int mgmt_send_stats_response(int sock, mgmt_stats_response_t* response);
 int mgmt_send_users_response(int sock, mgmt_users_response_t* response);
 int mgmt_send_simple_response(int sock, mgmt_simple_response_t* response);

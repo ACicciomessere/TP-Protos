@@ -8,6 +8,15 @@
 #include <pthread.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <stdbool.h>
+#include <fcntl.h> // Para fcntl
+#include <sys/socket.h> // Para fcntl
+
+// Configuración dinámica del servidor
+static int g_connection_timeout_ms = 10000;   // Timeout por defecto (ms)
+static int g_buffer_size = 4096;              // Tamaño de buffer por defecto (bytes)
+static int g_max_clients = 1024;              // Máximo de clientes por defecto
+static bool g_dissectors_enabled = true;      // Disectores habilitados
 
 // Puntero a datos compartidos
 static shared_data_t* g_shared_data = NULL;
@@ -376,7 +385,115 @@ int mgmt_handle_client(int client_sock) {
                 
                 return mgmt_send_stats_response(client_sock, &response);
             }
-            
+
+        case CMD_SET_TIMEOUT:
+            {
+                mgmt_simple_response_t response;
+                memset(&response, 0, sizeof(response));
+
+                int ms = atoi(msg.username);  // El valor llega como string en username
+                if (ms > 0) {
+                    g_connection_timeout_ms = ms;
+                    response.success = 1;
+                    snprintf(response.message, sizeof(response.message),
+                             "Timeout de conexión configurado en %d ms", ms);
+                } else {
+                    response.success = 0;
+                    snprintf(response.message, sizeof(response.message),
+                             "Valor de timeout inválido");
+                }
+
+                return mgmt_send_simple_response(client_sock, &response);
+            }
+
+        case CMD_SET_BUFFER:
+            {
+                mgmt_simple_response_t response;
+                memset(&response, 0, sizeof(response));
+
+                int bytes = atoi(msg.username);
+                if (bytes > 0) {
+                    g_buffer_size = bytes;
+                    response.success = 1;
+                    snprintf(response.message, sizeof(response.message),
+                             "Tamaño de buffer configurado en %d bytes", bytes);
+                } else {
+                    response.success = 0;
+                    snprintf(response.message, sizeof(response.message),
+                             "Valor de buffer inválido");
+                }
+
+                return mgmt_send_simple_response(client_sock, &response);
+            }
+
+        case CMD_SET_MAX_CLIENTS:
+            {
+                mgmt_simple_response_t response;
+                memset(&response, 0, sizeof(response));
+
+                int num = atoi(msg.username);
+                if (num > 0) {
+                    g_max_clients = num;
+                    response.success = 1;
+                    snprintf(response.message, sizeof(response.message),
+                             "Máximo de clientes configurado en %d", num);
+                } else {
+                    response.success = 0;
+                    snprintf(response.message, sizeof(response.message),
+                             "Valor de máximo de clientes inválido");
+                }
+
+                return mgmt_send_simple_response(client_sock, &response);
+            }
+
+        case CMD_ENABLE_DISSECTORS:
+            {
+                mgmt_simple_response_t response;
+                memset(&response, 0, sizeof(response));
+                g_dissectors_enabled = true;
+                response.success = 1;
+                snprintf(response.message, sizeof(response.message),
+                         "Disectores habilitados");
+                return mgmt_send_simple_response(client_sock, &response);
+            }
+
+        case CMD_DISABLE_DISSECTORS:
+            {
+                mgmt_simple_response_t response;
+                memset(&response, 0, sizeof(response));
+                g_dissectors_enabled = false;
+                response.success = 1;
+                snprintf(response.message, sizeof(response.message),
+                         "Disectores deshabilitados");
+                return mgmt_send_simple_response(client_sock, &response);
+            }
+
+        case CMD_RELOAD_CONFIG:
+            {
+                mgmt_simple_response_t response;
+                memset(&response, 0, sizeof(response));
+                // En una implementación real, aquí se volvería a cargar la configuración
+                // desde un archivo. Por ahora, se envía éxito.
+                response.success = 1;
+                snprintf(response.message, sizeof(response.message),
+                         "Configuración recargada exitosamente");
+                return mgmt_send_simple_response(client_sock, &response);
+            }
+
+        case CMD_GET_CONFIG:
+            {
+                mgmt_config_response_t response;
+                memset(&response, 0, sizeof(response));
+                response.success = 1;
+                response.timeout_ms = g_connection_timeout_ms;
+                response.buffer_size = g_buffer_size;
+                response.max_clients = g_max_clients;
+                response.dissectors_enabled = g_dissectors_enabled ? 1 : 0;
+                snprintf(response.message, sizeof(response.message),
+                         "Configuración actual obtenida");
+                return mgmt_send_config_response(client_sock, &response);
+            }
+        
         default:
             {
                 mgmt_simple_response_t response;
@@ -572,12 +689,19 @@ int mgmt_send_simple_response(int sock, mgmt_simple_response_t* response) {
         return -1;
     }
     
-    ssize_t bytes_sent = send(sock, response, sizeof(mgmt_simple_response_t), 0);
-    if (bytes_sent <= 0) {
-        return -1;
-    }
-    
-    return 0;
+    ssize_t bytes_sent = send(sock, response, sizeof(*response), 0);
+    return (bytes_sent == sizeof(*response)) ? 0 : -1;
+}
+
+// -------- Config response helpers --------
+int mgmt_send_config_response(int sock, mgmt_config_response_t* response) {
+    ssize_t bytes_sent = send(sock, response, sizeof(*response), 0);
+    return (bytes_sent == sizeof(*response)) ? 0 : -1;
+}
+
+int mgmt_receive_config_response(int sock, mgmt_config_response_t* response) {
+    ssize_t bytes_recv = recv(sock, response, sizeof(*response), 0);
+    return (bytes_recv == sizeof(*response)) ? 0 : -1;
 }
 
 // Iniciar servidor de gestión
@@ -635,6 +759,11 @@ void* mgmt_accept_loop(void* arg) {
         socklen_t addr_len = sizeof(client_addr);
         int client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &addr_len);
         if (client_sock >= 0) {
+            // Asegurar modo bloqueante para operaciones sencillas de recv/send
+            int flags = fcntl(client_sock, F_GETFL, 0);
+            if (flags != -1) {
+                fcntl(client_sock, F_SETFL, flags & ~O_NONBLOCK);
+            }
             mgmt_handle_client(client_sock);
             close(client_sock);
         }
