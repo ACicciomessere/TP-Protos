@@ -12,6 +12,35 @@
 #include <fcntl.h> // Para fcntl
 #include <sys/socket.h> // Para fcntl
 
+// Helpers para enviar/recibir todo el payload
+static int send_all(int sock, const void* buffer, size_t length) {
+    const uint8_t* ptr = (const uint8_t*)buffer;
+    size_t remaining = length;
+    while (remaining > 0) {
+        ssize_t n = send(sock, ptr, remaining, 0);
+        if (n <= 0) {
+            return -1;
+        }
+        ptr += n;
+        remaining -= n;
+    }
+    return 0;
+}
+
+static int recv_all(int sock, void* buffer, size_t length) {
+    uint8_t* ptr = (uint8_t*)buffer;
+    size_t remaining = length;
+    while (remaining > 0) {
+        ssize_t n = recv(sock, ptr, remaining, 0);
+        if (n <= 0) {
+            return -1;
+        }
+        ptr += n;
+        remaining -= n;
+    }
+    return 0;
+}
+
 // Configuración dinámica del servidor
 static int g_connection_timeout_ms = 10000;   // Timeout por defecto (ms)
 static int g_buffer_size = 4096;              // Tamaño de buffer por defecto (bytes)
@@ -306,9 +335,8 @@ int mgmt_handle_client(int client_sock) {
     
     mgmt_message_t msg;
     
-    // Recibir mensaje
-    ssize_t bytes_received = recv(client_sock, &msg, sizeof(msg), 0);
-    if (bytes_received <= 0) {
+    // Recibir mensaje completo
+    if (recv_all(client_sock, &msg, sizeof(msg)) < 0) {
         return -1;
     }
     
@@ -557,12 +585,10 @@ int mgmt_send_command(int sock, mgmt_command_t cmd, const char* username, const 
         msg.password[MAX_PASSWORD_LEN - 1] = '\0';
     }
     
-    ssize_t bytes_sent = send(sock, &msg, sizeof(msg), 0);
-    if (bytes_sent < 0) {
+    if (send_all(sock, &msg, sizeof(msg)) < 0) {
         perror("Error sending message");
         return -1;
     }
-    
     return 0;
 }
 
@@ -597,111 +623,48 @@ void mgmt_close_connection(int sock) {
 
 // Recibir respuesta de estadísticas optimizada
 int mgmt_receive_stats_response(int sock, mgmt_stats_response_t* response) {
-    if (!response) {
-        return -1;
-    }
-    
-    ssize_t bytes_received = recv(sock, response, sizeof(mgmt_stats_response_t), 0);
-    if (bytes_received < 0) {
-        perror("Error receiving stats response");
-        return -1;
-    }
-    
-    if (bytes_received == 0) {
-        printf("Server closed connection\n");
-        return -1;
-    }
-    
-    return 0;
+    if (!response) return -1;
+    return recv_all(sock, response, sizeof(*response));
 }
 
 // Recibir respuesta de usuarios optimizada
 int mgmt_receive_users_response(int sock, mgmt_users_response_t* response) {
-    if (!response) {
-        return -1;
-    }
-    
-    ssize_t bytes_received = recv(sock, response, sizeof(mgmt_users_response_t), 0);
-    if (bytes_received < 0) {
-        perror("Error receiving users response");
-        return -1;
-    }
-    
-    if (bytes_received == 0) {
-        printf("Server closed connection\n");
-        return -1;
-    }
-    
-    return 0;
+    if (!response) return -1;
+    return recv_all(sock, response, sizeof(*response));
 }
 
 // Recibir respuesta simple optimizada
 int mgmt_receive_simple_response(int sock, mgmt_simple_response_t* response) {
-    if (!response) {
-        return -1;
-    }
-    
-    ssize_t bytes_received = recv(sock, response, sizeof(mgmt_simple_response_t), 0);
-    if (bytes_received < 0) {
-        perror("Error receiving simple response");
-        return -1;
-    }
-    
-    if (bytes_received == 0) {
-        printf("Server closed connection\n");
-        return -1;
-    }
-    
-    return 0;
+    if (!response) return -1;
+    return recv_all(sock, response, sizeof(*response));
 }
 
 // Enviar respuesta de estadísticas optimizada
 int mgmt_send_stats_response(int sock, mgmt_stats_response_t* response) {
-    if (!response) {
-        return -1;
-    }
-    
-    ssize_t bytes_sent = send(sock, response, sizeof(mgmt_stats_response_t), 0);
-    if (bytes_sent <= 0) {
-        return -1;
-    }
-    
-    return 0;
+    if (!response) return -1;
+    return send_all(sock, response, sizeof(*response));
 }
 
 // Enviar respuesta de usuarios optimizada
 int mgmt_send_users_response(int sock, mgmt_users_response_t* response) {
-    if (!response) {
-        return -1;
-    }
-    
-    ssize_t bytes_sent = send(sock, response, sizeof(mgmt_users_response_t), 0);
-    if (bytes_sent <= 0) {
-        return -1;
-    }
-    
-    return 0;
+    if (!response) return -1;
+    return send_all(sock, response, sizeof(*response));
 }
 
 // Enviar respuesta simple optimizada
 int mgmt_send_simple_response(int sock, mgmt_simple_response_t* response) {
-    if (!response) {
-        return -1;
-    }
-    
-    ssize_t bytes_sent = send(sock, response, sizeof(*response), 0);
-    return (bytes_sent == sizeof(*response)) ? 0 : -1;
+    if (!response) return -1;
+    return send_all(sock, response, sizeof(*response));
 }
 
 // -------- Config response helpers --------
 int mgmt_send_config_response(int sock, mgmt_config_response_t* response) {
-    ssize_t bytes_sent = send(sock, response, sizeof(*response), 0);
-    return (bytes_sent == sizeof(*response)) ? 0 : -1;
+    return send_all(sock, response, sizeof(*response));
 }
 
 int mgmt_receive_config_response(int sock, mgmt_config_response_t* response) {
-    ssize_t bytes_recv = recv(sock, response, sizeof(*response), 0);
-    return (bytes_recv == sizeof(*response)) ? 0 : -1;
+    if (!response) return -1;
+    return recv_all(sock, response, sizeof(*response));
 }
 
 // Iniciar servidor de gestión
