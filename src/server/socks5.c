@@ -166,7 +166,7 @@ int validateUser(const char* username, const char* password, struct socks5args* 
             if (db_user && db_pass) {
                 if (strcmp(username, db_user) == 0 && strcmp(password, db_pass) == 0) {
                     fclose(file);
-                    log_access(username, "AUTH_SUCCESS", "User authenticated successfully (auth.db)");
+                    log_access(username, "AUTH_SUCCESS", "User authenticated successfully");
                     return 1;
                 }
             }

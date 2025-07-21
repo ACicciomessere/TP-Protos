@@ -233,12 +233,26 @@ int main(int argc, char **argv) {
                     case STATE_GREETING:
                         printf("[DBG] Handling GREETING for fd=%d\n", cfd);
                         log_info("Handling GREETING for fd=%d, id=%llu", cfd, clients[i].connection_id);
-                        clients[i].state = socks5_handle_greeting(cfd, &args, clients[i].connection_id);
+                        {
+                            int res = socks5_handle_greeting(cfd, &args, clients[i].connection_id);
+                            if (res < 0) {
+                                clients[i].state = STATE_ERROR;
+                            } else {
+                                clients[i].state = (client_state)res;
+                            }
+                        }
                         break;
                     case STATE_AUTH:
                         printf("[DBG] Handling AUTH for fd=%d\n", cfd);
                         log_info("Handling AUTH for fd=%d, id=%llu", cfd, clients[i].connection_id);
-                        clients[i].state = socks5_handle_auth(cfd, &args, clients[i].connection_id);
+                        {
+                            int res = socks5_handle_auth(cfd, &args, clients[i].connection_id);
+                            if (res < 0) {
+                                clients[i].state = STATE_ERROR;
+                            } else {
+                                clients[i].state = (client_state)res;
+                            }
+                        }
                         break;
                     case STATE_REQUEST:
                         printf("[DBG] Handling REQUEST for fd=%d\n", cfd);
