@@ -15,6 +15,18 @@
 #include "../logger.h"
 #include "../pop3_sniffer.h"
 
+static void sockaddr_to_string(char *buffer, const struct sockaddr *addr) {
+    if (addr->sa_family == AF_INET) {
+        struct sockaddr_in *sin = (struct sockaddr_in *)addr;
+        inet_ntop(AF_INET, &sin->sin_addr, buffer, INET6_ADDRSTRLEN);
+    } else if (addr->sa_family == AF_INET6) {
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)addr;
+        inet_ntop(AF_INET6, &sin6->sin6_addr, buffer, INET6_ADDRSTRLEN);
+    } else {
+        strcpy(buffer, "Unknown address family");
+    }
+}
+
 #define BUFFER_SIZE 1024
 #define READ_BUFFER_SIZE 2048
 #define MAX_HOSTNAME_LENGTH 255
@@ -290,7 +302,7 @@ int handleClient(int clientSocket, struct socks5args* args) {
 
     struct addrinfo* connectAddresses;
     int dest_port = 0;
-    if (handleRequest(clientSocket, &connectAddresses, &dest_port))
+    if (handleRequest(clientSocket, &connectAddresses, &dest_port, authenticated_user))
         return -1;
 
      // Ahora nos podemos conectar al servidor solicitado
@@ -377,7 +389,12 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authe
                 
             return handleUsernamePasswordAuth(clientSocket, args, authenticated_user);
         } else {
-            log_error("Authentication required but client doesn't support username/password!");
+            char client_ip[INET6_ADDRSTRLEN];
+            struct sockaddr_storage addr;
+            socklen_t addr_len = sizeof(addr);
+            getpeername(clientSocket, (struct sockaddr*)&addr, &addr_len);
+            sockaddr_to_string(client_ip, (struct sockaddr*)&addr);
+            log_error("Auth required, but client at %s does not support username/password.", client_ip);
             if (sendFull(clientSocket, "\x05\xFF", 2, 0) < 0)
                 return -1;
 
@@ -392,7 +409,12 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authe
             return -1;
         return 0;
     } else {
-        log_error("No acceptable authentication method found!");
+        char client_ip[INET6_ADDRSTRLEN];
+        struct sockaddr_storage addr;
+        socklen_t addr_len = sizeof(addr);
+        getpeername(clientSocket, (struct sockaddr*)&addr, &addr_len);
+        sockaddr_to_string(client_ip, (struct sockaddr*)&addr);
+        log_error("No acceptable authentication method found for client at %s.", client_ip);
         if (sendFull(clientSocket, "\x05\xFF", 2, 0) < 0)
             return -1;
 
@@ -402,7 +424,7 @@ int handleAuthNegotiation(int clientSocket, struct socks5args* args, char* authe
     }
 }
 
-int handleRequest(int clientSocket, struct addrinfo** connectAddresses, int* dest_port) {
+int handleRequest(int clientSocket, struct addrinfo** connectAddresses, int* dest_port, const char* authenticated_user) {
     ssize_t received;
     char receiveBuffer[READ_BUFFER_SIZE + 1];
 
@@ -485,6 +507,7 @@ int handleRequest(int clientSocket, struct addrinfo** connectAddresses, int* des
     }
 
     log_info("Client asked to connect to: %s:%d", hostname, port);
+    log_access(authenticated_user, "CONNECT_REQUEST", "Client requested to connect to %s:%d", hostname, port);
 
     // Store destination port for POP3 sniffing
     if (dest_port) {
@@ -496,7 +519,7 @@ int handleRequest(int clientSocket, struct addrinfo** connectAddresses, int* des
 
     int getAddrStatus = getaddrinfo(hostname, service, &addrHints, connectAddresses);
     if (getAddrStatus != 0) {
-        log_error("getaddrinfo() failed: %s", gai_strerror(getAddrStatus));
+        log_error("getaddrinfo() failed for hostname '%s': %s", hostname, gai_strerror(getAddrStatus));
 
         char errorMessage[10] = "\x05 \x00\x01\x00\x00\x00\x00\x00\x00";
         errorMessage[1] =
@@ -715,8 +738,8 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
     freeaddrinfo(*connectAddresses);
 
     if (sock == -1) {
-        log_error("Failed to connect to any of the %d available addresses. Last error: %s (%s)", 
-               total_addresses, last_error_type, strerror(last_errno));
+        log_error("Failed to connect to destination after trying %d addresses. Last error was: %s", 
+               total_addresses, last_error_type);
         
         // Reporte de errores mejorado basado en el tipo de falla
         char socks_error = '\x05';  // Default: Connection refused
@@ -808,11 +831,11 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     continue;
                 } else {
-                    log_error("recv() in data relay: %s", strerror(errno));
+                    log_error("recv() from %s failed: %s", i == 0 ? "client" : "remote server", strerror(errno));
                     alive = 0;
                 }
             } else if (received == 0) {
-                log_info("Connection closed by peer");
+                log_info("Connection closed by %s", i == 0 ? "client" : "remote server");
                 alive = 0;
             } else {
                 int otherSocket = pollFds[i].fd == clientSocket ? remoteSocket : clientSocket;

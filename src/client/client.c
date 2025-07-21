@@ -4,6 +4,7 @@
 #include <string.h>
 #include <getopt.h>
 #include <stdint.h>
+#include "../logger.h"
 
 void show_help(const char* program) {
     printf("Usage: %s [OPTIONS]\n", program);
@@ -39,7 +40,7 @@ void show_version(void) {
 void add_user(const char* user_pass) {
     char* separator = strchr(user_pass, ':');
     if (separator == NULL) {
-        fprintf(stderr, "Error: Invalid format. Use user:password\n");
+        log_fatal("Invalid format for user. Use user:password");
         exit(1);
     }
     
@@ -50,13 +51,13 @@ void add_user(const char* user_pass) {
     // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
     
     // Send command
     if (mgmt_send_command(sock, CMD_ADD_USER, user, password) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -64,7 +65,7 @@ void add_user(const char* user_pass) {
     // Receive response
     mgmt_simple_response_t response;
     if (mgmt_receive_simple_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -83,13 +84,13 @@ void delete_user(const char* user) {
     // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
     
     // Send command
     if (mgmt_send_command(sock, CMD_DEL_USER, user, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -97,7 +98,7 @@ void delete_user(const char* user) {
     // Receive response
     mgmt_simple_response_t response;
     if (mgmt_receive_simple_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -116,13 +117,13 @@ void list_users(void) {
     // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
     
     // Send command
     if (mgmt_send_command(sock, CMD_LIST_USERS, NULL, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -130,7 +131,7 @@ void list_users(void) {
     // Receive response
     mgmt_users_response_t response;
     if (mgmt_receive_users_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -155,13 +156,13 @@ void show_stats(void) {
     // Connect to server
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
     
     // Send command
     if (mgmt_send_command(sock, CMD_STATS, NULL, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -169,7 +170,7 @@ void show_stats(void) {
     // Receive response
     mgmt_stats_response_t response;
     if (mgmt_receive_stats_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -220,19 +221,19 @@ void show_stats(void) {
 static void set_timeout(const char* ms_str) {
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
 
     if (mgmt_send_command(sock, CMD_SET_TIMEOUT, ms_str, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
 
     mgmt_simple_response_t response;
     if (mgmt_receive_simple_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -249,19 +250,19 @@ static void set_timeout(const char* ms_str) {
 static void set_buffer(const char* bytes_str) {
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
 
     if (mgmt_send_command(sock, CMD_SET_BUFFER, bytes_str, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
 
     mgmt_simple_response_t response;
     if (mgmt_receive_simple_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -278,19 +279,19 @@ static void set_buffer(const char* bytes_str) {
 static void set_max_clients(const char* num_str) {
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
 
     if (mgmt_send_command(sock, CMD_SET_MAX_CLIENTS, num_str, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
 
     mgmt_simple_response_t response;
     if (mgmt_receive_simple_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -307,19 +308,19 @@ static void set_max_clients(const char* num_str) {
 static void enable_dissectors(void) {
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
 
     if (mgmt_send_command(sock, CMD_ENABLE_DISSECTORS, NULL, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
 
     mgmt_simple_response_t response;
     if (mgmt_receive_simple_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -336,19 +337,19 @@ static void enable_dissectors(void) {
 static void disable_dissectors(void) {
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
 
     if (mgmt_send_command(sock, CMD_DISABLE_DISSECTORS, NULL, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
 
     mgmt_simple_response_t response;
     if (mgmt_receive_simple_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -365,19 +366,19 @@ static void disable_dissectors(void) {
 static void reload_config(void) {
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
 
     if (mgmt_send_command(sock, CMD_RELOAD_CONFIG, NULL, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
 
     mgmt_simple_response_t response;
     if (mgmt_receive_simple_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -394,19 +395,19 @@ static void reload_config(void) {
 static void show_config(void) {
     int sock = mgmt_connect_to_server();
     if (sock < 0) {
-        fprintf(stderr, "Error: Could not connect to management server\n");
+        log_fatal("Could not connect to management server at %s:%d", "127.0.0.1", 8080);
         exit(1);
     }
 
     if (mgmt_send_command(sock, CMD_GET_CONFIG, NULL, NULL) < 0) {
-        fprintf(stderr, "Error: Could not send command\n");
+        log_fatal("Could not send command to management server");
         mgmt_close_connection(sock);
         exit(1);
     }
 
     mgmt_config_response_t response;
     if (mgmt_receive_config_response(sock, &response) < 0) {
-        fprintf(stderr, "Error: Could not receive response\n");
+        log_fatal("Could not receive response from management server");
         mgmt_close_connection(sock);
         exit(1);
     }
@@ -430,6 +431,7 @@ static void show_config(void) {
 }
 
 int main(int argc, char *argv[]) {
+    logger_init(LOG_INFO, NULL); // Using stderr for client messages
     int option;
     static struct option long_options[] = {
         {"help",      no_argument,       0, 'h'},
@@ -495,10 +497,10 @@ int main(int argc, char *argv[]) {
                 reload_config();
                 break;
             default:
-                fprintf(stderr, "Invalid option. Use -h for help.\n");
+                log_fatal("Invalid option. Use -h for help.");
                 return 1;
         }
     }
-
+    logger_close();
     return 0;
 }

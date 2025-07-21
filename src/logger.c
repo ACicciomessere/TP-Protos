@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 static struct {
     FILE *file;
@@ -78,7 +79,10 @@ void logger_log(log_level level, const char *file, int line, const char *fmt, ..
     va_end(args);
 
     // Print to log file
-    if (level == LOG_INFO) {
+    if (level >= LOG_ERROR) {
+        fprintf(L.file, "%s [%-5s] %s:%d: %s (errno: %s)\n",
+                timestamp, level_strings[level], file, line, msg_buf, strerror(errno));
+    } else if (level == LOG_INFO) {
         fprintf(L.file, "%s [%-5s] %s\n",
                 timestamp, level_strings[level], msg_buf);
     } else {

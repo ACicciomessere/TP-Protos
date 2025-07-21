@@ -1,3 +1,5 @@
 .vscode
-
+bin/
 *.o
+bin/client
+bin/socks5
