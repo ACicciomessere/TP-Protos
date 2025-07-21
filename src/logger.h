@@ -36,7 +36,7 @@ void logger_close(void);
  * Logs a generic log message.
  * It is preferable to use the helper macros (log_info, log_debug, etc.).
  */
-void logger_log(log_level level, const char *file, int line, const char *fmt, ...);
+void logger_log(log_level level, const char *fmt, ...);
 
 
 /*
@@ -50,11 +50,11 @@ void log_access(const char *user, const char *status, const char *details_fmt, .
 
 
 /* Macros to facilitate logging */
-#define log_debug(...) logger_log(LOG_DEBUG, __FILE__, __LINE__, __VA_ARGS__)
-#define log_info(...)  logger_log(LOG_INFO,  __FILE__, __LINE__, __VA_ARGS__)
-#define log_warn(...)  logger_log(LOG_WARN,  __FILE__, __LINE__, __VA_ARGS__)
-#define log_error(...) logger_log(LOG_ERROR, __FILE__, __LINE__, __VA_ARGS__)
-#define log_fatal(...) logger_log(LOG_FATAL, __FILE__, __LINE__, __VA_ARGS__)
+#define log_debug(...) logger_log(LOG_DEBUG, __VA_ARGS__)
+#define log_info(...)  logger_log(LOG_INFO,  __VA_ARGS__)
+#define log_warn(...)  logger_log(LOG_WARN,  __VA_ARGS__)
+#define log_error(...) logger_log(LOG_ERROR, __VA_ARGS__)
+#define log_fatal(...) logger_log(LOG_FATAL, __VA_ARGS__)
 
 
 #endif // LOGGER_H

@@ -52,7 +52,7 @@ void logger_close(void) {
     pthread_mutex_unlock(&L.mutex);
 }
 
-void logger_log(log_level level, const char *file, int line, const char *fmt, ...) {
+void logger_log(log_level level, const char *fmt, ...) {
     if (level < L.level) {
         return;
     }
@@ -80,14 +80,11 @@ void logger_log(log_level level, const char *file, int line, const char *fmt, ..
 
     // Print to log file
     if (level >= LOG_ERROR) {
-        fprintf(L.file, "%s [%-5s] %s:%d: %s (errno: %s)\n",
-                timestamp, level_strings[level], file, line, msg_buf, strerror(errno));
-    } else if (level == LOG_INFO) {
+        fprintf(L.file, "%s [%-5s] %s (errno: %s)\n",
+                timestamp, level_strings[level], msg_buf, strerror(errno));
+    } else {
         fprintf(L.file, "%s [%-5s] %s\n",
                 timestamp, level_strings[level], msg_buf);
-    } else {
-        fprintf(L.file, "%s [%-5s] %s:%d: %s\n",
-                timestamp, level_strings[level], file, line, msg_buf);
     }
     fflush(L.file);
 
