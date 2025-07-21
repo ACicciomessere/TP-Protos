@@ -648,7 +648,6 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
     int sock = -1;
     char addrBuffer[128];
     int attempt = 0;
-    int last_errno = 0;
     const char* last_error_type = "unknown";
     
     // Intentamos IPv6
@@ -661,7 +660,6 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
         sock = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
         if (sock < 0) {
             log_warn("Failed to create socket for %s: %s", printAddressPort(addr, addrBuffer), strerror(errno));
-            last_errno = errno;
             last_error_type = "socket creation";
             continue;
         }
@@ -673,7 +671,6 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
             log_info("Successfully connected to: %s (%s %s) %s %s (Flags:%s)", printFamily(addr), printType(addr), printProtocol(addr), addr->ai_canonname ? addr->ai_canonname : "-", printAddressPort(addr, addrBuf), flags_buffer);
             break;  // Exitoso
         } else {
-            last_errno = errno;
             if (connect_result == 0) {
                 log_info("Connection to %s timed out after %dms", printAddressPort(addr, addrBuffer), CONNECTION_TIMEOUT_MS);
                 last_error_type = "timeout";
@@ -703,7 +700,6 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
             sock = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
             if (sock < 0) {
                 log_warn("Failed to create socket for %s: %s", printAddressPort(addr, addrBuffer), strerror(errno));
-                last_errno = errno;
                 last_error_type = "socket creation";
                 continue;
             }
@@ -715,7 +711,6 @@ int handleConnectAndReply(int clientSocket, struct addrinfo** connectAddresses, 
                 log_info("Successfully connected to: %s (%s %s) %s %s (Flags:%s)", printFamily(addr), printType(addr), printProtocol(addr), addr->ai_canonname ? addr->ai_canonname : "-", printAddressPort(addr, addrBuf), flags_buffer);
                 break;  // Exitoso
             } else {
-                last_errno = errno;
                 if (connect_result == 0) {
                     log_info("Connection to %s timed out after %dms", printAddressPort(addr, addrBuffer), CONNECTION_TIMEOUT_MS);
                     last_error_type = "timeout";
