@@ -868,12 +868,18 @@ int handleConnectionData(int clientSocket, int remoteSocket, const char* authent
     return 0;
 }
 
-int socks5_handle_greeting(int client_fd, struct socks5args *args) {
+int socks5_handle_greeting(int client_fd, struct socks5args *args, uint64_t connection_id) {
     uint8_t buffer[BUFFER_SIZE];
     ssize_t n = recv(client_fd, buffer, sizeof(buffer), 0);
-    if (n <= 0) return -1;
+    if (n <= 0) {
+        log_error("Greeting failed (fd=%d, id=%llu): %s", client_fd, connection_id, n == 0 ? "closed" : strerror(errno));
+        return -1;
+    }
 
-    if (buffer[0] != 0x05) return -1; // SOCKS5
+    if (buffer[0] != 0x05) {
+        log_warn("Unsupported SOCKS version %d (fd=%d, id=%llu)", buffer[0], client_fd, connection_id);
+        return -1; // SOCKS5
+    }
 
     // respondemos con: version 5, método de autenticación 0x02 (username/password)
     uint8_t response[2] = {0x05, 0x02};
@@ -881,12 +887,18 @@ int socks5_handle_greeting(int client_fd, struct socks5args *args) {
     return STATE_AUTH;
 }
 
-int socks5_handle_auth(int client_fd, struct socks5args *args) {
+int socks5_handle_auth(int client_fd, struct socks5args *args, uint64_t connection_id) {
     uint8_t buffer[BUFFER_SIZE];
     ssize_t n = recv(client_fd, buffer, sizeof(buffer), 0);
-    if (n <= 0) return -1;
+    if (n <= 0) {
+        log_error("Auth failed (fd=%d, id=%llu): %s", client_fd, connection_id, n == 0 ? "closed" : strerror(errno));
+        return -1;
+    }
 
-    if (buffer[0] != 0x01) return -1; // auth version
+    if (buffer[0] != 0x01) {
+        log_warn("Unsupported auth version %d (fd=%d, id=%llu)", buffer[0], client_fd, connection_id);
+        return -1; // auth version
+    }
 
     uint8_t ulen = buffer[1];
     char user[256] = {0};
@@ -895,6 +907,8 @@ int socks5_handle_auth(int client_fd, struct socks5args *args) {
     uint8_t plen = buffer[2 + ulen];
     char pass[256] = {0};
     memcpy(pass, &buffer[3 + ulen], plen);
+
+    log_info("Auth attempt for user '%s' (fd=%d, id=%llu)", user, client_fd, connection_id);
 
     if (validateUser(user, pass, args)) {
         uint8_t response[2] = {0x01, 0x00}; // success
@@ -907,12 +921,18 @@ int socks5_handle_auth(int client_fd, struct socks5args *args) {
     }
 }
 
-int socks5_handle_request(int client_fd, struct socks5args *args) {
+int socks5_handle_request(int client_fd, struct socks5args *args, uint64_t connection_id) {
     uint8_t buffer[BUFFER_SIZE];
     ssize_t n = recv(client_fd, buffer, sizeof(buffer), 0);
-    if (n <= 0) return -1;
+    if (n <= 0) {
+        log_error("Request failed (fd=%d, id=%llu): %s", client_fd, connection_id, n == 0 ? "closed" : strerror(errno));
+        return -1;
+    }
 
-    if (buffer[0] != 0x05 || buffer[1] != 0x01) return -1; // only CONNECT supported
+    if (buffer[0] != 0x05 || buffer[1] != 0x01) {
+        log_warn("Unsupported request %d/%d (fd=%d, id=%llu)", buffer[0], buffer[1], client_fd, connection_id);
+        return -1; // only CONNECT supported
+    }
 
     uint8_t atyp = buffer[3];
     char dest_addr[256] = {0};
@@ -933,7 +953,7 @@ int socks5_handle_request(int client_fd, struct socks5args *args) {
         return -1;
     }
 
-    log_info("Client requested to connect to %s:%d", dest_addr, dest_port);
+    log_info("Client requested to connect to %s:%d (fd=%d, id=%llu)", dest_addr, dest_port, client_fd, connection_id);
 
     // conectamos
     struct addrinfo hints = {0}, *res;
@@ -942,28 +962,28 @@ int socks5_handle_request(int client_fd, struct socks5args *args) {
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", dest_port);
     if (getaddrinfo(dest_addr, port_str, &hints, &res) != 0) {
-        log_error("Failed to resolve address: %s", dest_addr);
+        log_error("Failed to resolve address: %s (fd=%d, id=%llu)", dest_addr, client_fd, connection_id);
         send_socks5_reply(client_fd, REPLY_HOST_UNREACHABLE);
         return -1;
     }
 
     int remote_fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (remote_fd < 0) {
-        log_error("Failed to create socket for %s", dest_addr);
+        log_error("Failed to create socket for %s (fd=%d, id=%llu)", dest_addr, client_fd, connection_id);
         freeaddrinfo(res);
         send_socks5_reply(client_fd, REPLY_GENERAL_FAILURE);
         return -1;
     }
 
     if (connect(remote_fd, res->ai_addr, res->ai_addrlen) < 0) {
-        log_error("Failed to connect to %s:%d", dest_addr, dest_port);
+        log_error("Failed to connect to %s:%d (fd=%d, id=%llu)", dest_addr, dest_port, client_fd, connection_id);
         close(remote_fd);
         freeaddrinfo(res);
         send_socks5_reply(client_fd, REPLY_CONNECTION_REFUSED);
         return -1;
     }
 
-    log_info("Successfully connected to %s:%d", dest_addr, dest_port);
+    log_info("Successfully connected to %s:%d (fd=%d, id=%llu)", dest_addr, dest_port, client_fd, connection_id);
 
     freeaddrinfo(res);
 

@@ -34,6 +34,7 @@ typedef enum {
 
 typedef struct {
     int client_fd;
+    uint64_t connection_id;
     int remote_fd;
     client_state state;
     struct sockaddr_storage addr;
@@ -188,6 +189,7 @@ int main(int argc, char **argv) {
                 int i = find_available_client_slot();
                 if (i >= 0) {
                     clients[i].client_fd = client_fd;
+                    clients[i].connection_id = mgmt_get_next_connection_id();
                     clients[i].remote_fd = -1;
                     clients[i].state = STATE_GREETING;
                     clients[i].addr = client_addr;
@@ -196,8 +198,8 @@ int main(int argc, char **argv) {
                     clients[i].closed = 0;
                     FD_SET(client_fd, &master_set);
                     if (client_fd > fdmax) fdmax = client_fd;
-                    printf("[INF] Accepted new client (fd=%d)\n", client_fd);
-                    log_info("Accepted new client (fd=%d)", client_fd);
+                    printf("[INF] Accepted new client (fd=%d, id=%llu)\n", client_fd, clients[i].connection_id);
+                    log_info("Accepted new client (fd=%d, id=%llu)", client_fd, clients[i].connection_id);
                     mgmt_update_stats(0, 1);
                 } else {
                     printf("[ERR] Too many clients, rejecting fd=%d\n", client_fd);
@@ -230,18 +232,18 @@ int main(int argc, char **argv) {
                 switch (clients[i].state) {
                     case STATE_GREETING:
                         printf("[DBG] Handling GREETING for fd=%d\n", cfd);
-                        log_info("Handling GREETING for fd=%d", cfd);
-                        clients[i].state = socks5_handle_greeting(cfd, &args);
+                        log_info("Handling GREETING for fd=%d, id=%llu", cfd, clients[i].connection_id);
+                        clients[i].state = socks5_handle_greeting(cfd, &args, clients[i].connection_id);
                         break;
                     case STATE_AUTH:
                         printf("[DBG] Handling AUTH for fd=%d\n", cfd);
-                        log_info("Handling AUTH for fd=%d", cfd);
-                        clients[i].state = socks5_handle_auth(cfd, &args);
+                        log_info("Handling AUTH for fd=%d, id=%llu", cfd, clients[i].connection_id);
+                        clients[i].state = socks5_handle_auth(cfd, &args, clients[i].connection_id);
                         break;
                     case STATE_REQUEST:
                         printf("[DBG] Handling REQUEST for fd=%d\n", cfd);
-                        log_info("Handling REQUEST for fd=%d", cfd);
-                        clients[i].remote_fd = socks5_handle_request(cfd, &args);
+                        log_info("Handling REQUEST for fd=%d, id=%llu", cfd, clients[i].connection_id);
+                        clients[i].remote_fd = socks5_handle_request(cfd, &args, clients[i].connection_id);
                         if (clients[i].remote_fd >= 0) {
                             set_nonblocking(clients[i].remote_fd);
                             FD_SET(clients[i].remote_fd, &master_set);
@@ -261,7 +263,7 @@ int main(int argc, char **argv) {
                         break;
                     case STATE_ERROR:
                         printf("[ERR] Client in error state (fd=%d), closing.\n", cfd);
-                        log_error("Closing client due to error (fd=%d)", cfd);
+                        log_error("Closing client due to error (fd=%d, id=%llu)", cfd, clients[i].connection_id);
                         remove_client(i, &master_set);
                         break;
                     case STATE_DONE:

@@ -41,8 +41,8 @@ int handleRequest(int clientSocket, struct addrinfo** addressConnectTo, int* des
 int handleConnectAndReply(int clientSocket, struct addrinfo** addressConnectTo, int* remoteSocket);
 int handleConnectionData(int clientSocket, int remoteSocket, const char* authenticated_user, int dest_port, struct socks5args* args);
 
-int socks5_handle_greeting(int client_fd, struct socks5args *args);
-int socks5_handle_auth(int client_fd, struct socks5args *args);
-int socks5_handle_request(int client_fd, struct socks5args *args);
+int socks5_handle_greeting(int client_fd, struct socks5args *args, uint64_t connection_id);
+int socks5_handle_auth(int client_fd, struct socks5args *args, uint64_t connection_id);
+int socks5_handle_request(int client_fd, struct socks5args *args, uint64_t connection_id);
 
 #endif

@@ -134,6 +134,8 @@ int mgmt_init_shared_memory(void) {
     pthread_mutex_init(&g_shared_data->users_mutex, &attr);
     pthread_mutex_init(&g_shared_data->stats_mutex, &attr);
     
+    g_shared_data->connection_id_counter = 0;
+    
     pthread_mutexattr_destroy(&attr);
 
     // Cargar usuarios persistidos, si existen
@@ -324,6 +326,12 @@ void mgmt_update_user_stats(const char* username, uint64_t bytes_transferred, in
     
     // También actualizar estadísticas globales
     mgmt_update_stats(bytes_transferred, connection_change);
+}
+
+uint64_t mgmt_get_next_connection_id(void) {
+    if (g_shared_data == NULL) return 0;
+    // GCC/Clang built-in para incremento atómico
+    return __sync_add_and_fetch(&g_shared_data->connection_id_counter, 1);
 }
 
 // Manejar cliente de gestión con protocolo optimizado

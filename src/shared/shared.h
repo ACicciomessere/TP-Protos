@@ -64,6 +64,7 @@ typedef struct {
     user_t users[MAX_USERS];
     stats_t stats;
     int user_count;
+    uint64_t connection_id_counter;
     pthread_mutex_t users_mutex;
     pthread_mutex_t stats_mutex;
 } shared_data_t;
@@ -143,6 +144,7 @@ shared_data_t* mgmt_get_shared_data(void);
 // Funciones para actualizar estadísticas
 void mgmt_update_stats(uint64_t bytes_transferred, int connection_change);
 void mgmt_update_user_stats(const char* username, uint64_t bytes_transferred, int connection_change);
+uint64_t mgmt_get_next_connection_id(void);
 
 // Funciones utilitarias
 void sayHello(void);
