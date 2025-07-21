@@ -948,6 +948,11 @@ int socks5_handle_request(int client_fd, struct socks5args *args, uint64_t conne
         memcpy(dest_addr, &buffer[5], len);
         dest_addr[len] = '\0';
         dest_port = ntohs(*(uint16_t*)&buffer[5 + len]);
+    } else if (atyp == 0x04) { // IPv6
+        struct in6_addr ipv6_raw;
+        memcpy(&ipv6_raw, &buffer[4], sizeof(ipv6_raw));
+        inet_ntop(AF_INET6, &ipv6_raw, dest_addr, sizeof(dest_addr));
+        dest_port = ntohs(*(uint16_t*)&buffer[20]);
     } else {
         send_socks5_reply(client_fd, REPLY_ADDRESS_TYPE_NOT_SUPPORTED);
         return -1;
@@ -956,7 +961,7 @@ int socks5_handle_request(int client_fd, struct socks5args *args, uint64_t conne
     log_info("Client requested to connect to %s:%d (fd=%d, id=%llu)", dest_addr, dest_port, client_fd, connection_id);
 
     // conectamos
-    struct addrinfo hints = {0}, *res;
+    struct addrinfo hints = {0}, *res, *rp;
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     char port_str[6];
@@ -967,17 +972,22 @@ int socks5_handle_request(int client_fd, struct socks5args *args, uint64_t conne
         return -1;
     }
 
-    int remote_fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (remote_fd < 0) {
-        log_error("Failed to create socket for %s (fd=%d, id=%llu)", dest_addr, client_fd, connection_id);
-        freeaddrinfo(res);
-        send_socks5_reply(client_fd, REPLY_GENERAL_FAILURE);
-        return -1;
+    int remote_fd = -1;
+    for (rp = res; rp != NULL; rp = rp->ai_next) {
+        remote_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (remote_fd < 0) {
+            continue; // try next address
+        }
+        if (connect(remote_fd, rp->ai_addr, rp->ai_addrlen) == 0) {
+            // success
+            break;
+        }
+        close(remote_fd);
+        remote_fd = -1;
     }
 
-    if (connect(remote_fd, res->ai_addr, res->ai_addrlen) < 0) {
-        log_error("Failed to connect to %s:%d (fd=%d, id=%llu)", dest_addr, dest_port, client_fd, connection_id);
-        close(remote_fd);
+    if (remote_fd < 0) {
+        log_error("Failed to connect to %s:%d (fd=%d, id=%llu) using all resolved addresses", dest_addr, dest_port, client_fd, connection_id);
         freeaddrinfo(res);
         send_socks5_reply(client_fd, REPLY_CONNECTION_REFUSED);
         return -1;

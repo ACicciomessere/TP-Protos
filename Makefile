@@ -1,9 +1,9 @@
 include ./Makefile.inc
 
-SERVER_SOURCES=$(filter-out src/test.c src/server/main.c src/server/main_old.c src/stm_test.c src/buffer_test.c src/netutils_test.c src/parser_test.c src/parser_utils_test.c, $(wildcard src/*.c src/server/*.c))
+SERVER_SOURCES=$(filter-out src/test.c src/selector.c src/socks5_tests.c src/server/main.c src/server/main_old.c src/stm_test.c src/buffer_test.c src/netutils_test.c src/parser_test.c src/parser_utils_test.c, $(wildcard src/*.c src/server/*.c))
 CLIENT_SOURCES=$(wildcard src/client/*.c)
 SHARED_SOURCES=$(wildcard src/shared/*.c)
-TEST_SOURCES=src/test.c src/selector.c
+TEST_SOURCES=src/socks5_tests.c
 
 OBJECTS_FOLDER=./obj
 OUTPUT_FOLDER=./bin
@@ -31,9 +31,11 @@ $(CLIENT_OUTPUT_FILE): $(CLIENT_OBJECTS) $(SHARED_OBJECTS)
 	mkdir -p $(OUTPUT_FOLDER)
 	$(COMPILER) $(COMPILERFLAGS) $(LDFLAGS) $(CLIENT_OBJECTS) $(SHARED_OBJECTS) -o $(CLIENT_OUTPUT_FILE)
 
-$(TEST_OUTPUT_FILE): $(TEST_OBJECTS)
+TEST_SERVER_OBJECTS:=$(filter-out obj/server/main.o, $(SERVER_OBJECTS))
+
+$(TEST_OUTPUT_FILE): $(TEST_OBJECTS) $(TEST_SERVER_OBJECTS) $(SHARED_OBJECTS)
 	mkdir -p $(OUTPUT_FOLDER)
-	$(COMPILER) $(COMPILERFLAGS) $(LDFLAGS) $(TEST_OBJECTS) -o $(TEST_OUTPUT_FILE)
+	$(COMPILER) $(COMPILERFLAGS) $(LDFLAGS) $(TEST_OBJECTS) $(TEST_SERVER_OBJECTS) $(SHARED_OBJECTS) -o $(TEST_OUTPUT_FILE)
 
 clean:
 	rm -rf $(OUTPUT_FOLDER)
