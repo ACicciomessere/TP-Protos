@@ -94,3 +94,26 @@ obj/%.o: src/%.c
 # make tests       - Compila tests individuales con main() en carpeta ./test/
 # make check-tests - Compila tests que requieren framework 'check' (opcional)
 # make test        - Compila todos los tests en un solo ejecutable (original)
+
+STRESS_PORT ?= 1080
+
+TOOLS_FOLDER=tools
+STRESS_C_SOURCES=$(TOOLS_FOLDER)/stress_socks5.c
+STRESS_C_BINARY=$(OUTPUT_FOLDER)/stress_socks5
+
+$(STRESS_C_BINARY): $(STRESS_C_SOURCES)
+	mkdir -p $(OUTPUT_FOLDER)
+	$(COMPILER) $(COMPILERFLAGS) -O2 -std=c11 -pthread $< -o $@
+
+stress-c: server $(STRESS_C_BINARY)
+	@echo "[STRESS-C] Launching SOCKS5 server on port $(STRESS_PORT) in background..."
+	@./bin/socks5 -p $(STRESS_PORT) & \
+	SERVER_PID=$$!; \
+	sleep 1; \
+	$(STRESS_C_BINARY) --host 127.0.0.1 --port $(STRESS_PORT) --total 20000 --concurrency 1000; \
+	STATUS=$$?; \
+	echo "[STRESS-C] Stopping server (PID=$$SERVER_PID)"; \
+	kill $$SERVER_PID 2>/dev/null || true; \
+	exit $$STATUS
+
+.PHONY: stress-c

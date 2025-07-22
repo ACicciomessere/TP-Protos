@@ -168,3 +168,50 @@ Durante la ejecución, el servidor genera:
 - Monitoreo de credenciales POP3 para análisis de seguridad
 - Configuración de usuarios limitada (máximo 10)
 
+## 🏋️‍♂️ Pruebas de Stress
+
+A fin de responder a las preguntas de _performance_ y escalabilidad se añadió un
+script de _benchmark_ asíncrono que genera miles de conexiones simultáneas al
+servidor y mide la tasa de handshakes completados por segundo.
+
+### Ejecutar una prueba rápida
+
+```bash
+# Ejecución todo-en-uno: compila, lanza el servidor, corre el benchmark C y lo detiene
+make stress-c                    # usa 1080 por defecto
+
+# Elegir otro puerto (por ejemplo 12080)
+make stress-c STRESS_PORT=12080
+```
+
+### Ejecución manual paso a paso
+
+```bash
+# 1) Compilar
+make stress-c
+
+# 2) Iniciar servidor (en una terminal aparte)
+./bin/socks5 -p 1080 &
+
+# 3) Lanzar benchmark (otra terminal)
+./bin/stress_socks5 --host 127.0.0.1 --port 1080 \
+                    --total 20000 --concurrency 500
+```
+
+La herramienta imprime algo como:
+
+```
+Total attempted: 20000
+Successful handshakes: 16344
+Duration: 1.187 s
+Throughput: 13832.54 connections/sec
+Failures: 3656
+```
+
+Significado de los campos:
+* **Total attempted**: cantidad de conexiones TCP iniciadas.  
+* **Successful handshakes**: conexiones que completaron el saludo SOCKS5 (VER=5).  
+* **Duration**: tiempo total de la prueba.  
+* **Throughput**: `Successful/Duration` (conexiones/s).  
+* **Failures**: `Total - Successful` (conexiones rechazadas o sin respuesta).
+
