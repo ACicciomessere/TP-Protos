@@ -10,10 +10,10 @@
 #include <fcntl.h>
 
 #include "socks5.h"
-#include "util.h"
-#include "../shared/shared.h"
-#include "../logger.h"
-#include "../pop3_sniffer.h"
+#include "../../utils/util.h"
+#include "../../shared.h"
+#include "../../utils/logger.h"
+#include "../pop3/pop3_sniffer.h"
 
 static void sockaddr_to_string(char *buffer, const struct sockaddr *addr) {
     if (addr->sa_family == AF_INET) {

@@ -2,7 +2,7 @@
 #define _SOCKS5_H_
 
 #include <netdb.h>
-#include "../args.h"
+#include "../../utils/args.h"
 
 // Authentication methods
 #define SOCKS5_AUTH_NONE 0x00

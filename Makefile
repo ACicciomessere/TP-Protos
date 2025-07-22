@@ -1,15 +1,28 @@
 include ./Makefile.inc
 
-SERVER_SOURCES=$(filter-out src/test.c src/selector.c src/socks5_tests.c src/server/main.c src/server/main_old.c src/stm_test.c src/buffer_test.c src/netutils_test.c src/parser_test.c src/parser_utils_test.c, $(wildcard src/*.c src/server/*.c))
-CLIENT_SOURCES=$(wildcard src/client/*.c)
-SHARED_SOURCES=$(wildcard src/shared/*.c)
-TEST_SOURCES=src/socks5_tests.c
+# Agrupamos fuentes por sub-módulo para poder combinarlas sin duplicar
+CORE_SOURCES=$(wildcard src/core/*.c)
+UTIL_SOURCES=$(wildcard src/utils/*.c)
+PROTOCOL_SOURCES=$(wildcard src/protocols/*/*.c)
+SRC_ROOT_SOURCES=$(wildcard src/*.c)
+
+# Fuentes compartidas entre servidor y cliente
+SHARED_SOURCES=$(CORE_SOURCES) $(UTIL_SOURCES) src/shared.c
+
+# Fuentes exclusivas del servidor (todo menos el cliente y los tests)
+SERVER_SOURCES=$(filter-out src/client.c src/shared.c $(wildcard src/tests/*.c), $(SRC_ROOT_SOURCES)) $(PROTOCOL_SOURCES)
+
+# Fuente del cliente de gestión
+CLIENT_SOURCES=src/client.c
+
+# Fuentes de test
+TEST_SOURCES=$(wildcard src/tests/*.c)
 
 OBJECTS_FOLDER=./obj
 OUTPUT_FOLDER=./bin
 
-SERVER_OBJECTS=$(SERVER_SOURCES:src/%.c=obj/%.o) obj/server/main.o
-CLIENT_OBJECTS=$(CLIENT_SOURCES:src/%.c=obj/%.o) obj/logger.o
+SERVER_OBJECTS=$(SERVER_SOURCES:src/%.c=obj/%.o)
+CLIENT_OBJECTS=$(CLIENT_SOURCES:src/%.c=obj/%.o)
 SHARED_OBJECTS=$(SHARED_SOURCES:src/%.c=obj/%.o)
 TEST_OBJECTS=$(TEST_SOURCES:src/%.c=obj/%.o)
 
@@ -42,9 +55,7 @@ clean:
 	rm -rf $(OBJECTS_FOLDER)
 
 obj/%.o: src/%.c
-	mkdir -p $(OBJECTS_FOLDER)/server
-	mkdir -p $(OBJECTS_FOLDER)/client
-	mkdir -p $(OBJECTS_FOLDER)/shared
+	mkdir -p $(dir $@)
 	$(COMPILER) $(COMPILERFLAGS) -c $< -o $@
 
 .PHONY: all server client test clean

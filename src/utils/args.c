@@ -6,7 +6,7 @@
 #include <getopt.h>
 
 #include "args.h"
-#include "shared/shared.h"
+#include "../shared.h"
 
 static unsigned short
 port(const char* s)

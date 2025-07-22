@@ -1,10 +1,10 @@
-#include "../shared/shared.h"
+#include "shared.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
 #include <stdint.h>
-#include "../logger.h"
+#include "utils/logger.h"
 
 void show_help(const char* program) {
     printf("Usage: %s [OPTIONS]\n", program);

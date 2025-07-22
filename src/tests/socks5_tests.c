@@ -10,7 +10,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "server/socks5.h"   // header for functions under test
+#include "../protocols/socks5/socks5.h"   // header for functions under test
 
 // Helper: start a simple TCP echo-like server (does not send data, just accepts and closes)
 // family: AF_INET or AF_INET6

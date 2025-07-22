@@ -12,11 +12,11 @@
 #include <netinet/in.h>
 #include <netdb.h>
 
-#include "socks5.h"
-#include "../logger.h"
-#include "util.h"
-#include "../args.h"
-#include "../shared/shared.h"
+#include "protocols/socks5/socks5.h"
+#include "utils/logger.h"
+#include "utils/util.h"
+#include "utils/args.h"
+#include "shared.h"
 
 #define MAX_CLIENTS 1024
 #define BUFFER_SIZE 4096

@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include "src/pop3_sniffer.h"
+#include "../protocols/pop3/pop3_sniffer.h"
 
 int main(void) {
     pop3_sniffer_reset();
