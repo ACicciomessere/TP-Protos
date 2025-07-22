@@ -20,10 +20,8 @@ TEST_SOURCES=$(wildcard src/tests/*.c)
 
 # Tests individuales
 TEST_INDIVIDUAL_SOURCES=$(wildcard src/tests/*.c)
-# Tests que usan framework check
-CHECK_TESTS=src/tests/buffer_test.c src/tests/stm_test.c
 # Tests con main propio
-MAIN_TESTS=$(filter-out $(CHECK_TESTS), $(TEST_INDIVIDUAL_SOURCES))
+MAIN_TESTS=$(TEST_INDIVIDUAL_SOURCES)
 
 OBJECTS_FOLDER=./obj
 OUTPUT_FOLDER=./bin
@@ -38,7 +36,7 @@ SERVER_OUTPUT_FILE=$(OUTPUT_FOLDER)/socks5
 CLIENT_OUTPUT_FILE=$(OUTPUT_FOLDER)/client
 TEST_OUTPUT_FILE=$(OUTPUT_FOLDER)/test
 
-all: server client
+all: server client tests
 
 server: $(SERVER_OUTPUT_FILE)
 client: $(CLIENT_OUTPUT_FILE)
@@ -47,9 +45,6 @@ test: $(TEST_OUTPUT_FILE)
 # Compilar tests individuales
 tests: $(MAIN_TESTS:src/tests/%.c=$(TEST_FOLDER)/%)
 
-# Compilar tests que requieren check (opcional)
-check-tests: $(CHECK_TESTS:src/tests/%.c=$(TEST_FOLDER)/%)
-
 # Objetos del servidor sin main para tests que los necesiten
 TEST_SERVER_OBJECTS:=$(filter-out obj/main.o, $(SERVER_OBJECTS))
 
@@ -57,15 +52,6 @@ TEST_SERVER_OBJECTS:=$(filter-out obj/main.o, $(SERVER_OBJECTS))
 $(TEST_FOLDER)/%: src/tests/%.c $(SHARED_OBJECTS) $(TEST_SERVER_OBJECTS)
 	mkdir -p $(TEST_FOLDER)
 	$(COMPILER) $(COMPILERFLAGS) -I src $(LDFLAGS) $< $(SHARED_OBJECTS) $(TEST_SERVER_OBJECTS) -o $@
-
-# Regla para tests que usan check (necesitan linkeo con check)
-$(TEST_FOLDER)/buffer_test: src/tests/buffer_test.c $(SHARED_OBJECTS)
-	mkdir -p $(TEST_FOLDER)
-	$(COMPILER) $(COMPILERFLAGS) -I src $(LDFLAGS) $< $(filter-out obj/core/buffer.o, $(SHARED_OBJECTS)) -lcheck -lm -lpthread -lrt -lsubunit -o $@
-
-$(TEST_FOLDER)/stm_test: src/tests/stm_test.c $(SHARED_OBJECTS)
-	mkdir -p $(TEST_FOLDER)
-	$(COMPILER) $(COMPILERFLAGS) -I src $(LDFLAGS) $< $(SHARED_OBJECTS) -lcheck -lm -lpthread -lrt -lsubunit -o $@
 
 $(SERVER_OUTPUT_FILE): $(SERVER_OBJECTS) $(SHARED_OBJECTS)
 	mkdir -p $(OUTPUT_FOLDER)
