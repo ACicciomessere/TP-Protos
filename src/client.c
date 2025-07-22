@@ -21,8 +21,6 @@ void show_help(const char* program) {
     printf("  -t, --set-timeout MS Set connection timeout (milliseconds)\n");
     printf("  -b, --set-buffer BYTES  Set buffer size (bytes)\n");
     printf("  -m, --set-max-clients NUM Set maximum number of clients\n");
-    printf("  -e, --enable-dissectors   Enable protocol dissectors\n");
-    printf("  -x, --disable-dissectors  Disable protocol dissectors\n");
     printf("  -r, --reload-config       Reload configuration from file\n");
     printf("  -c, --config              Show current server configuration\n");
     printf("\n");
