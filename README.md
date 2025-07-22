@@ -84,19 +84,6 @@ make client    # Compila solo el cliente de gestión
 ./bin/client -s
 ```
 
-## ⚙️ Opciones de Configuración del Servidor
-
-| Opción | Descripción | Por Defecto |
-|--------|-------------|-------------|
-| `-h` | Muestra ayuda y termina | |
-| `-l <dirección>` | Dirección donde servir el proxy SOCKS | `0.0.0.0` |
-| `-p <puerto>` | Puerto para conexiones SOCKS | `1080` |
-| `-L <dirección>` | Dirección del servicio de gestión | `127.0.0.1` |
-| `-P <puerto>` | Puerto del servicio de gestión | `8080` |
-| `-u <usuario:clave>` | Agregar usuario (hasta 10) | |
-| `-N` | Deshabilitar sniffers de contraseñas | |
-| `-v` | Mostrar versión y terminar | |
-
 ## 📊 Testing y Rendimiento
 
 ### Test de Conexiones Múltiples
@@ -122,15 +109,8 @@ Estos comandos:
 ```bash
 # Compilar y ejecutar tests individuales
 make tests
-./test/buffer_test     # Test de buffers
-./test/stm_test        # Test de máquina de estados
+./test/pop3_test     # Test de POP3 sniffer
 ./test/socks5_tests    # Test del protocolo SOCKS5
-
-# Tests que requieren framework check
-make check-tests
-./test/buffer_test     # Con framework check
-./test/stm_test        # Con framework check
-```
 
 ## 🔧 Casos de Uso
 
@@ -143,7 +123,7 @@ curl --socks5 127.0.0.1:1080 --proxy-user usuario:clave https://www.google.com
 ### Usando Netcat a través del Proxy
 
 ```bash
-ncat --proxy 127.0.0.1:1080 --proxy-type socks5 --proxy-auth user:pass example.com 80
+ncat --proxy 127.0.0.1:1080 --proxy-type socks5 --proxy-auth user:pass google.com 80
 ```
 
 ### Configuración de Navegadores
