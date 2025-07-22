@@ -10,7 +10,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "../protocols/socks5/socks5.h"   // header for functions under test
+#include "protocols/socks5/socks5.h"   // header for functions under test
 
 // Helper: start a simple TCP echo-like server (does not send data, just accepts and closes)
 // family: AF_INET or AF_INET6
@@ -90,7 +90,7 @@ static int start_dummy_server(int family, uint16_t *out_port) {
     return 0; // success
 }
 
-static void test_ipv6_support() {
+static void test_ipv6_support(void) {
     printf("Running IPv6 support test...\n");
 
     uint16_t srv_port;
@@ -129,7 +129,7 @@ static void test_ipv6_support() {
     printf("IPv6 support test passed!\n");
 }
 
-static void test_failover_iterates_addresses() {
+static void test_failover_iterates_addresses(void) {
     printf("Running failover test (IPv6 fails, IPv4 succeeds)...\n");
 
     uint16_t srv_port;
@@ -172,4 +172,4 @@ int main(void) {
     test_failover_iterates_addresses();
     printf("All SOCKS5 tests passed.\n");
     return 0;
-} 
+}

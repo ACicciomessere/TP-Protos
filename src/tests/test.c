@@ -5,7 +5,7 @@
 #include <netinet/in.h>
 #include <signal.h>
 
-#include "../core/selector.h"
+#include "core/selector.h"
 
 #define PORT 12345
 #define BACKLOG 10
