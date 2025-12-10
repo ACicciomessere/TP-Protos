@@ -119,7 +119,7 @@ static void test_ipv6_support(void) {
     // Write request into the "client" side before calling handler
     assert(write(sp[1], req, sizeof(req)) == sizeof(req));
 
-    int remote_fd = socks5_handle_request(sp[0], NULL, 42);
+    int remote_fd = socks5_handle_request(sp[0], NULL, 42, NULL);
 
     assert(remote_fd >= 0);
     close(remote_fd);
@@ -155,7 +155,7 @@ static void test_failover_iterates_addresses(void) {
 
     assert(write(sp[1], req, req_len) == (ssize_t)req_len);
 
-    int remote_fd = socks5_handle_request(sp[0], NULL, 43);
+    int remote_fd = socks5_handle_request(sp[0], NULL, 43, NULL);
 
     assert(remote_fd >= 0);
     close(remote_fd);
