@@ -31,30 +31,30 @@ enum socks5_reply {
 /* Validación de usuario (archivo, shared memory, args) */
 int validateUser(const char* username, const char* password, struct socks5args* args);
 
-/* Handshake por etapas (no bloqueante desde el punto de vista del main) */
-int socks5_handle_greeting(int client_fd,
-                           struct socks5args *args,
-                           uint64_t connection_id);
-
-/* Devuelve siguiente estado (STATE_REQUEST) o <0 en error */
-int socks5_handle_auth(int client_fd,
-                       struct socks5args *args,
-                       uint64_t connection_id);
+/* Helper para enviar una respuesta estándar SOCKS5 */
+int send_socks5_reply(int client_fd, enum socks5_reply code);
 
 /*
- * Request + resolución + connect.
- * Bloqueante, pero el main lo llama desde un thread.
+ * Camino A: conexión al remoto + reply, PERO el REQUEST ya fue parseado en main.
  * Devuelve:
- *   - fd del remoto >= 0 en éxito
- *   - <0 en error
- * Además, si dest_port_out != NULL, escribe allí el puerto destino.
+ *   - remote_fd >= 0 si conectó OK (y ya envió REPLY_SUCCEEDED)
+ *   - <0 si falló (y ya envió el reply de error correspondiente)
+ */
+int socks5_connect_and_reply(int client_fd,
+                             const char *dest_addr,
+                             uint16_t dest_port,
+                             uint64_t connection_id);
+
+/*
+ * COMPAT: Mantener API vieja para los tests existentes.
+ * Esta función:
+ *   - lee/parses el REQUEST desde el socket (bloqueante con timeouts internos)
+ *   - hace connect + envía el reply (success o error)
+ *   - devuelve el remote_fd o <0 en error
  */
 int socks5_handle_request(int client_fd,
                           struct socks5args *args,
                           uint64_t connection_id,
                           uint16_t *dest_port_out);
-
-/* Helper para enviar una respuesta estándar SOCKS5 */
-int send_socks5_reply(int client_fd, enum socks5_reply code);
 
 #endif

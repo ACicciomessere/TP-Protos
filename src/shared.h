@@ -149,6 +149,7 @@ uint64_t mgmt_get_next_connection_id(void);
 // Getters de configuración dinámica
 int mgmt_get_buffer_size(void);
 int mgmt_get_max_clients(void);
+int mgmt_get_timeout_ms(void);
 
 // Funciones utilitarias
 void sayHello(void);

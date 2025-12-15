@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200112L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -544,6 +546,35 @@ int main(int argc, char *argv[])
     printf("Total data sent: %.2f MB\n", total_mb);
     printf("Elapsed time: %.3f s\n", elapsed);
     printf("Throughput: %.2f MB/s\n", throughput);
+
+    // === CSV OUTPUT (overwrite each run) ===
+    {
+        FILE *f = fopen("stress_results.csv", "w");
+        if (f == NULL)
+        {
+            fprintf(stderr, "[WARN] Could not write stress_results.csv: %s\n", strerror(errno));
+        }
+        else
+        {
+            time_t t = time(NULL);
+            struct tm tmv;
+#if defined(_POSIX_THREAD_SAFE_FUNCTIONS) || defined(__linux__)
+            localtime_r(&t, &tmv);
+#else
+            struct tm *ptm = localtime(&t);
+            if (ptm != NULL) tmv = *ptm;
+#endif
+            char ts[64];
+            strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tmv);
+
+            fprintf(f, "timestamp,connections,bytes_per_conn,elapsed_s,throughput_MBps,success,failed,total_MB\n");
+            fprintf(f, "%s,%d,%zu,%.3f,%.2f,%d,%d,%.2f\n",
+                    ts, connections, bytes_per_conn, elapsed, throughput,
+                    g_successful, g_failed, total_mb);
+            fclose(f);
+        }
+    }
+    // === end CSV OUTPUT ===
 
     free(threads);
     free(args);

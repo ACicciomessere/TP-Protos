@@ -1,6 +1,5 @@
 #include <arpa/inet.h>
 #include <errno.h>
-#include <limits.h>
 #include <netdb.h>
 #include <poll.h>
 #include <stdio.h>
@@ -9,17 +8,14 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/socket.h>
 
 #include "socks5.h"
 #include "../../utils/util.h"
 #include "../../shared.h"
 #include "../../utils/logger.h"
 
-/* Tamaños varios */
-#define READ_BUFFER_SIZE 2048
-#define MAX_HOSTNAME_LENGTH 255
-
-/* Helpers de IO “full” con pequeños timeouts para no quedar colgados */
+/* Helpers de IO “full” con pequeños timeouts para no quedar colgados (usado por tests/compat) */
 static ssize_t recvFull(int fd, void* buf, size_t n, int flags) {
     size_t totalReceived = 0;
     int retries = 0;
@@ -54,10 +50,10 @@ static ssize_t recvFull(int fd, void* buf, size_t n, int flags) {
             } else {
                 log_warn("Connection closed by peer, partial data received: %zu/%zu bytes",
                          totalReceived, n);
-                return totalReceived;
+                return (ssize_t)totalReceived;
             }
         } else {
-            totalReceived += nowReceived;
+            totalReceived += (size_t)nowReceived;
             retries = 0;
         }
     }
@@ -67,7 +63,7 @@ static ssize_t recvFull(int fd, void* buf, size_t n, int flags) {
         return -1;
     }
 
-    return totalReceived;
+    return (ssize_t)totalReceived;
 }
 
 static ssize_t sendFull(int fd, const void* buf, size_t n, int flags) {
@@ -101,7 +97,7 @@ static ssize_t sendFull(int fd, const void* buf, size_t n, int flags) {
             log_error("send() returned 0, connection may be closed");
             return -1;
         } else {
-            totalSent += nowSent;
+            totalSent += (size_t)nowSent;
             retries = 0;
         }
     }
@@ -111,11 +107,10 @@ static ssize_t sendFull(int fd, const void* buf, size_t n, int flags) {
         return -1;
     }
 
-    return totalSent;
+    return (ssize_t)totalSent;
 }
 
 /* ---- Validación de usuario (archivo + shared memory + args) ---- */
-
 int validateUser(const char* username, const char* password, struct socks5args* args) {
     if (!username || !password) {
         return 0;
@@ -173,13 +168,12 @@ int validateUser(const char* username, const char* password, struct socks5args* 
     return 0;
 }
 
-/* ---- Respuestas genéricas SOCKS5 ---- */
-
+/* Helper para enviar una respuesta estándar SOCKS5 */
 int send_socks5_reply(int client_fd, enum socks5_reply code) {
     uint8_t response[10];
 
     response[0] = SOCKS_VERSION;   // VER
-    response[1] = code;            // REP
+    response[1] = (uint8_t)code;   // REP
     response[2] = 0x00;            // RSV
     response[3] = 0x01;            // ATYP = IPv4 (dummy)
     response[4] = 0x00;            // BND.ADDR = 0.0.0.0
@@ -193,155 +187,123 @@ int send_socks5_reply(int client_fd, enum socks5_reply code) {
     return n == (ssize_t)sizeof(response) ? 0 : -1;
 }
 
-/* ---- GREETING ----
- * Lee VER, NMETHODS, METHODS y responde con USERPASS (0x02).
- * Devuelve 1 (STATE_AUTH) o <0 en error.
- */
+/* --- CONNECT robusto (usado por thread / compat) --- */
 
-int socks5_handle_greeting(int client_fd,
-                           struct socks5args *args,
-                           uint64_t connection_id) {
-    (void)args; // por ahora no lo usamos acá
-
-    uint8_t hdr[2];
-    ssize_t n = recvFull(client_fd, hdr, 2, 0);
-    if (n <= 0) {
-        log_error("Greeting failed (fd=%d, id=%llu): %s",
-                  client_fd, (unsigned long long)connection_id,
-                  n == 0 ? "closed" : strerror(errno));
-        return -1;
-    }
-
-    if (hdr[0] != SOCKS_VERSION) {
-        log_warn("Unsupported SOCKS version %d (fd=%d, id=%llu)",
-                 hdr[0], client_fd, (unsigned long long)connection_id);
-        return -1;
-    }
-
-    uint8_t nmethods = hdr[1];
-    uint8_t methods[256];
-    if (nmethods == 0) {
-        log_error("Client sent 0 methods (fd=%d, id=%llu)",
-                  client_fd, (unsigned long long)connection_id);
-        return -1;
-    }
-
-    n = recvFull(client_fd, methods, nmethods, 0);
-    if (n <= 0) {
-        log_error("Failed to read methods (fd=%d, id=%llu): %s",
-                  client_fd, (unsigned long long)connection_id,
-                  n == 0 ? "closed" : strerror(errno));
-        return -1;
-    }
-
-    log_info("Client (fd=%d, id=%llu) offered %u methods",
-             client_fd, (unsigned long long)connection_id, nmethods);
-
-    /* Por simplicidad: siempre pedimos USERPASS (0x02).
-     * (curl soporta esto sin problemas usando --proxy-user)
-     */
-    uint8_t resp[2] = { SOCKS_VERSION, SOCKS5_AUTH_USERPASS };
-    if (sendFull(client_fd, resp, 2, 0) < 0) {
-        log_error("Failed to send greeting response (fd=%d, id=%llu)",
-                  client_fd, (unsigned long long)connection_id);
-        return -1;
-    }
-
-    return 1; // STATE_AUTH
+static int set_nonblocking_fd(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return -1;
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
+    return 0;
 }
 
-/* ---- AUTH ----
- * Sub-negociación USER/PASS.
- * Devuelve 2 (STATE_REQUEST) o <0 si falla.
- */
+static enum socks5_reply map_connect_errno_to_reply(int e) {
+    switch (e) {
+        case ECONNREFUSED: return REPLY_CONNECTION_REFUSED;
+        case ENETUNREACH:  return REPLY_NETWORK_UNREACHABLE;
+        case EHOSTUNREACH: return REPLY_HOST_UNREACHABLE;
+        case ETIMEDOUT:    return REPLY_TTL_EXPIRED;
+        default:           return REPLY_GENERAL_SOCKS_SERVER_FAILURE;
+    }
+}
 
-int socks5_handle_auth(int client_fd,
-                       struct socks5args *args,
-                       uint64_t connection_id) {
-    uint8_t hdr[2];
-    ssize_t received = recvFull(client_fd, hdr, 2, 0);
-    if (received < 0) {
-        log_error("Failed to receive username/password auth header");
+int socks5_connect_and_reply(int client_fd,
+                             const char *dest_addr,
+                             uint16_t dest_port,
+                             uint64_t connection_id) {
+    if (dest_addr == NULL || dest_addr[0] == '\0' || dest_port == 0) {
+        (void)send_socks5_reply(client_fd, REPLY_GENERAL_SOCKS_SERVER_FAILURE);
         return -1;
     }
 
-    if (hdr[0] != 0x01) {
-        log_error("Invalid username/password auth version: %d", hdr[0]);
-        sendFull(client_fd, "\x01\x01", 2, 0);
+    log_info("Client requested to connect to %s:%u (fd=%d, id=%llu)",
+             dest_addr, dest_port, client_fd, (unsigned long long)connection_id);
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_family   = AF_UNSPEC;
+
+    char service[6];
+    snprintf(service, sizeof(service), "%u", dest_port);
+
+    struct addrinfo *res = NULL;
+    int gai = getaddrinfo(dest_addr, service, &hints, &res);
+    if (gai != 0 || res == NULL) {
+        (void)send_socks5_reply(client_fd, REPLY_HOST_UNREACHABLE);
         return -1;
     }
 
-    int usernameLen = hdr[1];
-    if (usernameLen <= 0 || usernameLen > 255) {
-        log_error("Invalid username length: %d", usernameLen);
-        sendFull(client_fd, "\x01\x01", 2, 0);
-        return -1;
-    }
+    int remote_fd = -1;
+    enum socks5_reply reply = REPLY_GENERAL_SOCKS_SERVER_FAILURE;
 
-    char username[256];
-    received = recvFull(client_fd, username, usernameLen, 0);
-    if (received < 0) {
-        log_error("Failed to receive username");
-        sendFull(client_fd, "\x01\x01", 2, 0);
-        return -1;
-    }
-    username[usernameLen] = '\0';
+    for (struct addrinfo *rp = res; rp != NULL; rp = rp->ai_next) {
+        remote_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (remote_fd < 0) continue;
 
-    uint8_t pwdLenBuf[1];
-    received = recvFull(client_fd, pwdLenBuf, 1, 0);
-    if (received < 0) {
-        log_error("Failed to receive password length");
-        sendFull(client_fd, "\x01\x01", 2, 0);
-        return -1;
-    }
-
-    int passwordLen = pwdLenBuf[0];
-    if (passwordLen <= 0 || passwordLen > 255) {
-        log_error("Invalid password length: %d", passwordLen);
-        sendFull(client_fd, "\x01\x01", 2, 0);
-        return -1;
-    }
-
-    char password[256];
-    received = recvFull(client_fd, password, passwordLen, 0);
-    if (received < 0) {
-        log_error("Failed to receive password");
-        sendFull(client_fd, "\x01\x01", 2, 0);
-        return -1;
-    }
-    password[passwordLen] = '\0';
-
-    log_info("Authentication attempt (fd=%d, id=%llu): username='%s'",
-             client_fd, (unsigned long long)connection_id, username);
-
-    if (validateUser(username, password, args)) {
-        if (sendFull(client_fd, "\x01\x00", 2, 0) < 0) {
-            log_error("Failed to send auth success response");
-            return -1;
+        if (set_nonblocking_fd(remote_fd) < 0) {
+            close(remote_fd);
+            remote_fd = -1;
+            continue;
         }
-        return 2; // STATE_REQUEST
-    } else {
-        sendFull(client_fd, "\x01\x01", 2, 0);
+
+        int rc = connect(remote_fd, rp->ai_addr, rp->ai_addrlen);
+        if (rc == 0) {
+            reply = REPLY_SUCCEEDED;
+            break;
+        }
+
+        if (rc < 0 && errno == EINPROGRESS) {
+            struct pollfd pfd = { .fd = remote_fd, .events = POLLOUT, .revents = 0 };
+            int prc = poll(&pfd, 1, 5000);
+            if (prc > 0) {
+                int soerr = 0;
+                socklen_t slen = sizeof(soerr);
+                if (getsockopt(remote_fd, SOL_SOCKET, SO_ERROR, &soerr, &slen) == 0 && soerr == 0) {
+                    reply = REPLY_SUCCEEDED;
+                    break;
+                }
+                reply = map_connect_errno_to_reply(soerr);
+            } else if (prc == 0) {
+                reply = REPLY_TTL_EXPIRED;
+            } else {
+                reply = REPLY_GENERAL_SOCKS_SERVER_FAILURE;
+            }
+        } else {
+            reply = map_connect_errno_to_reply(errno);
+        }
+
+        close(remote_fd);
+        remote_fd = -1;
+    }
+
+    freeaddrinfo(res);
+
+    if (remote_fd < 0) {
+        (void)send_socks5_reply(client_fd, reply);
         return -1;
     }
+
+    if (send_socks5_reply(client_fd, REPLY_SUCCEEDED) < 0) {
+        close(remote_fd);
+        return -1;
+    }
+
+    return remote_fd;
 }
 
-/* ---- REQUEST + RESOLUCIÓN + CONNECT ----
- * Se llama desde un thread. Bloquea, pero ya no traba el select().
- * Devuelve fd remoto >=0 en éxito, <0 en error.
- */
+/* ------------------------------------------------------------------ */
+/* COMPAT: API vieja para tests: lee REQUEST del socket y delega */
 
 int socks5_handle_request(int client_fd,
                           struct socks5args *args,
                           uint64_t connection_id,
                           uint16_t *dest_port_out) {
-    (void)args; // por ahora no usamos nada extra de args acá
+    (void)args;
 
     uint8_t hdr[4];
     ssize_t received = recvFull(client_fd, hdr, 4, 0);
     if (received < 0) {
-        log_error("Request failed (fd=%d, id=%llu): header read error",
-                  client_fd, (unsigned long long)connection_id);
         return -1;
     }
 
@@ -349,136 +311,58 @@ int socks5_handle_request(int client_fd,
     uint8_t cmd = hdr[1];
     uint8_t atyp = hdr[3];
 
-    if (ver != SOCKS_VERSION || cmd != 0x01) {  // solo soportamos CONNECT
-        log_warn("Unsupported request %d/%d (fd=%d, id=%llu)",
-                 ver, cmd, client_fd, (unsigned long long)connection_id);
-        send_socks5_reply(client_fd, REPLY_COMMAND_NOT_SUPPORTED);
+    if (ver != SOCKS_VERSION || cmd != 0x01) {
+        (void)send_socks5_reply(client_fd, REPLY_COMMAND_NOT_SUPPORTED);
         return -1;
     }
 
     char dest_addr[256] = {0};
     uint16_t dest_port = 0;
 
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family   = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-
-    if (atyp == 0x01) {
-        /* IPv4 */
+    if (atyp == 0x01) { /* IPv4 */
         struct in_addr addr;
-        received = recvFull(client_fd, &addr, sizeof(addr), 0);
-        if (received < 0) return -1;
+        if (recvFull(client_fd, &addr, sizeof(addr), 0) < 0) return -1;
 
         uint16_t portBuf;
-        received = recvFull(client_fd, &portBuf, sizeof(portBuf), 0);
-        if (received < 0) return -1;
+        if (recvFull(client_fd, &portBuf, sizeof(portBuf), 0) < 0) return -1;
 
         dest_port = ntohs(portBuf);
-        inet_ntop(AF_INET, &addr, dest_addr, sizeof(dest_addr));
-    } else if (atyp == 0x03) {
-        /* Dominio */
-        uint8_t len;
-        received = recvFull(client_fd, &len, 1, 0);
-        if (received < 0) return -1;
+        if (inet_ntop(AF_INET, &addr, dest_addr, sizeof(dest_addr)) == NULL) return -1;
 
-        if (len == 0 || len > 255) {
-            send_socks5_reply(client_fd, REPLY_ADDRESS_TYPE_NOT_SUPPORTED);
+    } else if (atyp == 0x03) { /* DOMAIN */
+        uint8_t len;
+        if (recvFull(client_fd, &len, 1, 0) < 0) return -1;
+
+        if (len == 0 || len > 255 || len >= sizeof(dest_addr)) {
+            (void)send_socks5_reply(client_fd, REPLY_ADDRESS_TYPE_NOT_SUPPORTED);
             return -1;
         }
 
-        received = recvFull(client_fd, dest_addr, len, 0);
-        if (received < 0) return -1;
+        if (recvFull(client_fd, dest_addr, len, 0) < 0) return -1;
         dest_addr[len] = '\0';
 
         uint16_t portBuf;
-        received = recvFull(client_fd, &portBuf, sizeof(portBuf), 0);
-        if (received < 0) return -1;
+        if (recvFull(client_fd, &portBuf, sizeof(portBuf), 0) < 0) return -1;
 
         dest_port = ntohs(portBuf);
-    } else if (atyp == 0x04) {
-        /* IPv6 */
+
+    } else if (atyp == 0x04) { /* IPv6 */
         struct in6_addr addr6;
-        received = recvFull(client_fd, &addr6, sizeof(addr6), 0);
-        if (received < 0) return -1;
+        if (recvFull(client_fd, &addr6, sizeof(addr6), 0) < 0) return -1;
 
         uint16_t portBuf;
-        received = recvFull(client_fd, &portBuf, sizeof(portBuf), 0);
-        if (received < 0) return -1;
+        if (recvFull(client_fd, &portBuf, sizeof(portBuf), 0) < 0) return -1;
 
         dest_port = ntohs(portBuf);
-        inet_ntop(AF_INET6, &addr6, dest_addr, sizeof(dest_addr));
+        if (inet_ntop(AF_INET6, &addr6, dest_addr, sizeof(dest_addr)) == NULL) return -1;
+
     } else {
-        send_socks5_reply(client_fd, REPLY_ADDRESS_TYPE_NOT_SUPPORTED);
+        (void)send_socks5_reply(client_fd, REPLY_ADDRESS_TYPE_NOT_SUPPORTED);
         return -1;
     }
 
-    log_info("Client requested to connect to %s:%u (fd=%d, id=%llu)",
-             dest_addr, dest_port, client_fd, (unsigned long long)connection_id);
+    if (dest_port_out) *dest_port_out = dest_port;
 
-    if (dest_port_out) {
-        *dest_port_out = dest_port;
-    }
-
-    char service[6];
-    snprintf(service, sizeof(service), "%u", dest_port);
-
-    struct addrinfo *res = NULL;
-    int gai = getaddrinfo(dest_addr, service, &hints, &res);
-    if (gai != 0) {
-        log_error("getaddrinfo() failed for hostname '%s': %s",
-                  dest_addr, gai_strerror(gai));
-        send_socks5_reply(client_fd, REPLY_HOST_UNREACHABLE);
-        return -1;
-    }
-
-    int remote_fd = -1;
-    for (struct addrinfo *rp = res; rp != NULL; rp = rp->ai_next) {
-        remote_fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-        if (remote_fd < 0) {
-            continue;
-        }
-
-        if (connect(remote_fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            /* éxito */
-            break;
-        }
-
-        close(remote_fd);
-        remote_fd = -1;
-    }
-
-    if (remote_fd < 0) {
-        log_error("Failed to connect to %s:%u (fd=%d, id=%llu)",
-                  dest_addr, dest_port, client_fd, (unsigned long long)connection_id);
-        freeaddrinfo(res);
-        send_socks5_reply(client_fd, REPLY_CONNECTION_REFUSED);
-        return -1;
-    }
-
-    freeaddrinfo(res);
-
-    /* Respuesta de éxito al cliente: VER REP RSV ATYP BND.ADDR BND.PORT
-     * Para simplificar, devolvemos 0.0.0.0:0 (como hace send_socks5_reply en SUCCEEDED).
-     */
-    uint8_t resp[10] = {
-        SOCKS_VERSION,
-        REPLY_SUCCEEDED,
-        0x00,
-        0x01, /* IPv4 dummy */
-        0x00, 0x00, 0x00, 0x00, /* 0.0.0.0 */
-        0x00, 0x00              /* port 0 */
-    };
-
-    if (sendFull(client_fd, resp, sizeof(resp), 0) < 0) {
-        log_error("Failed to send success reply to client");
-        close(remote_fd);
-        return -1;
-    }
-
-    log_info("Successfully connected to %s:%u (fd=%d, remote_fd=%d, id=%llu)",
-             dest_addr, dest_port, client_fd, remote_fd, (unsigned long long)connection_id);
-
-    return remote_fd;
+    /* Delegamos el connect+reply al Camino A */
+    return socks5_connect_and_reply(client_fd, dest_addr, dest_port, connection_id);
 }

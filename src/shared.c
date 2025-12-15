@@ -75,6 +75,10 @@ int mgmt_get_max_clients(void) {
     return g_max_clients;
 }
 
+int mgmt_get_timeout_ms(void) {
+    return g_connection_timeout_ms;
+}
+
 /* =========================================================================
  * Persistencia de usuarios
  * ========================================================================= */
