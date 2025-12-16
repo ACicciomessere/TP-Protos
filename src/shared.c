@@ -751,27 +751,5 @@ int mgmt_server_start(int port) {
     return server_sock;
 }
 
-/* =========================================================================
- * Hilo de aceptación de management (bloqueante, separado del select principal)
- * ========================================================================= */
-
-void* mgmt_accept_loop(void* arg) {
-    int server_sock = *((int*)arg);
-
-    while (1) {
-        struct sockaddr_in client_addr;
-        socklen_t addr_len = sizeof(client_addr);
-
-        int client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &addr_len);
-        if (client_sock >= 0) {
-            // Asegurar modo bloqueante para operaciones sencillas de recv/send
-            int flags = fcntl(client_sock, F_GETFL, 0);
-            if (flags != -1) {
-                fcntl(client_sock, F_SETFL, flags & ~O_NONBLOCK);
-            }
-            mgmt_handle_client(client_sock);
-            close(client_sock);
-        }
-    }
-    return NULL;
-}
+/* mgmt_accept_loop eliminado - ahora el manejo de conexiones de management
+ * es 100% no bloqueante, integrado en el loop principal de select() en main.c */

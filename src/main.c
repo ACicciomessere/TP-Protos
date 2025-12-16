@@ -487,13 +487,7 @@ int main(int argc, char **argv) {
         log_error("No se pudo iniciar el servidor de gestión");
         return 1;
     }
-
-    pthread_t mgmt_thread;
-    if (pthread_create(&mgmt_thread, NULL, mgmt_accept_loop, &mgmt_fd) != 0) {
-        perror("pthread_create mgmt_thread");
-        return 1;
-    }
-    pthread_detach(mgmt_thread);
+    set_nonblocking(mgmt_fd); // Configurar management como no bloqueante
 
     if (pipe(dns_pipe_fds) < 0) {
         perror("dns pipe");
@@ -517,9 +511,11 @@ int main(int argc, char **argv) {
     FD_ZERO(&master_set);
     FD_SET(server_fd, &master_set);
     FD_SET(dns_pipe_fds[0], &master_set);
+    FD_SET(mgmt_fd, &master_set);  // Agregar management al selector
 
     int fdmax = server_fd;
     if (dns_pipe_fds[0] > fdmax) fdmax = dns_pipe_fds[0];
+    if (mgmt_fd > fdmax) fdmax = mgmt_fd;
 
     signal(SIGINT, cleanup_handler);
 
@@ -607,7 +603,23 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* 2) Nuevas conexiones */
+        /* 2) Nuevas conexiones de management (no bloqueante) */
+        if (FD_ISSET(mgmt_fd, &read_set)) {
+            struct sockaddr_in mgmt_client_addr;
+            socklen_t mgmt_addr_len = sizeof(mgmt_client_addr);
+            int mgmt_client_sock = accept(mgmt_fd, (struct sockaddr*)&mgmt_client_addr, &mgmt_addr_len);
+            if (mgmt_client_sock >= 0) {
+                /* Mantener bloqueante para operaciones simples de recv/send del protocolo de management */
+                int flags = fcntl(mgmt_client_sock, F_GETFL, 0);
+                if (flags != -1) {
+                    fcntl(mgmt_client_sock, F_SETFL, flags & ~O_NONBLOCK);
+                }
+                mgmt_handle_client(mgmt_client_sock);
+                close(mgmt_client_sock);
+            }
+        }
+
+        /* 3) Nuevas conexiones SOCKS */
         if (FD_ISSET(server_fd, &read_set)) {
             struct sockaddr_storage client_addr;
             socklen_t addrlen = sizeof(client_addr);
