@@ -80,6 +80,72 @@ typedef struct {
     int remote_fd;
 } dns_result_t;
 
+/* =========================================================================
+ * Management clients (100% no bloqueante)
+ * ========================================================================= */
+#define MAX_MGMT_CLIENTS 16
+
+typedef enum {
+    MGMT_STATE_READING,   /* Leyendo el mensaje del cliente */
+    MGMT_STATE_WRITING,   /* Escribiendo la respuesta */
+    MGMT_STATE_DONE       /* Terminado, cerrar */
+} mgmt_client_state;
+
+typedef struct {
+    int fd;
+    mgmt_client_state state;
+    
+    /* Buffer de recepción (mgmt_message_t) */
+    unsigned char recv_buf[sizeof(mgmt_message_t)];
+    size_t recv_len;
+    
+    /* Buffer de envío (respuesta variable) */
+    unsigned char send_buf[4096];  /* Suficiente para cualquier respuesta */
+    size_t send_len;
+    size_t send_sent;
+} mgmt_client_t;
+
+static mgmt_client_t mgmt_clients[MAX_MGMT_CLIENTS];
+static fd_set *g_master_set = NULL;  /* Puntero al master_set para add_mgmt_client */
+static int *g_fdmax = NULL;          /* Puntero a fdmax para add_mgmt_client */
+
+/* Agrega un cliente de management al selector */
+static int add_mgmt_client(int fd) {
+    if (fd < 0 || fd >= FD_SETSIZE) return -1;
+    
+    /* Buscar slot libre */
+    int slot = -1;
+    for (int m = 0; m < MAX_MGMT_CLIENTS; m++) {
+        if (mgmt_clients[m].fd == -1) {
+            slot = m;
+            break;
+        }
+    }
+    
+    if (slot < 0) {
+        printf("[ERR] No slot available for management client fd=%d\n", fd);
+        return -1;
+    }
+    
+    /* Configurar cliente */
+    mgmt_clients[slot].fd = fd;
+    mgmt_clients[slot].state = MGMT_STATE_READING;
+    mgmt_clients[slot].recv_len = 0;
+    mgmt_clients[slot].send_len = 0;
+    mgmt_clients[slot].send_sent = 0;
+    
+    /* Agregar al selector con interés de lectura */
+    if (g_master_set != NULL) {
+        FD_SET(fd, g_master_set);
+        if (g_fdmax != NULL && fd > *g_fdmax) {
+            *g_fdmax = fd;
+        }
+    }
+    
+    printf("[INF] Management client added (fd=%d, slot=%d)\n", fd, slot);
+    return slot;
+}
+
 typedef struct {
     int client_index;
     int client_fd;
@@ -507,6 +573,15 @@ int main(int argc, char **argv) {
         reset_relay_buffers(&clients[i]);
     }
 
+    /* Inicializar clientes de management */
+    for (int m = 0; m < MAX_MGMT_CLIENTS; m++) {
+        mgmt_clients[m].fd = -1;
+        mgmt_clients[m].state = MGMT_STATE_DONE;
+        mgmt_clients[m].recv_len = 0;
+        mgmt_clients[m].send_len = 0;
+        mgmt_clients[m].send_sent = 0;
+    }
+
     fd_set master_set;
     FD_ZERO(&master_set);
     FD_SET(server_fd, &master_set);
@@ -516,6 +591,10 @@ int main(int argc, char **argv) {
     int fdmax = server_fd;
     if (dns_pipe_fds[0] > fdmax) fdmax = dns_pipe_fds[0];
     if (mgmt_fd > fdmax) fdmax = mgmt_fd;
+
+    /* Configurar punteros globales para add_mgmt_client */
+    g_master_set = &master_set;
+    g_fdmax = &fdmax;
 
     signal(SIGINT, cleanup_handler);
 
@@ -539,6 +618,15 @@ int main(int argc, char **argv) {
 
             if (clients[i].c2r_len != 0) FD_SET(clients[i].remote_fd, &write_set);
             if (clients[i].r2c_len != 0) FD_SET(clients[i].client_fd, &write_set);
+        }
+
+        /* Agregar clientes de management al write_set si tienen datos para enviar */
+        for (int m = 0; m < MAX_MGMT_CLIENTS; m++) {
+            if (mgmt_clients[m].fd == -1) continue;
+            if (mgmt_clients[m].state == MGMT_STATE_WRITING && 
+                mgmt_clients[m].send_sent < mgmt_clients[m].send_len) {
+                FD_SET(mgmt_clients[m].fd, &write_set);
+            }
         }
 
         /* Timeout configurable: evita el "select() sin timeout" que marcó la cátedra. */
@@ -609,13 +697,10 @@ int main(int argc, char **argv) {
             socklen_t mgmt_addr_len = sizeof(mgmt_client_addr);
             int mgmt_client_sock = accept(mgmt_fd, (struct sockaddr*)&mgmt_client_addr, &mgmt_addr_len);
             if (mgmt_client_sock >= 0) {
-                /* Mantener bloqueante para operaciones simples de recv/send del protocolo de management */
-                int flags = fcntl(mgmt_client_sock, F_GETFL, 0);
-                if (flags != -1) {
-                    fcntl(mgmt_client_sock, F_SETFL, flags & ~O_NONBLOCK);
+                set_nonblocking(mgmt_client_sock);
+                if (add_mgmt_client(mgmt_client_sock) < 0) {
+                    close(mgmt_client_sock);
                 }
-                mgmt_handle_client(mgmt_client_sock);
-                close(mgmt_client_sock);
             }
         }
 
@@ -834,6 +919,87 @@ int main(int argc, char **argv) {
 
                 default:
                     break;
+            }
+        }
+
+        /* 5) Manejo de clientes de management (no bloqueante) */
+        for (int m = 0; m < MAX_MGMT_CLIENTS; m++) {
+            if (mgmt_clients[m].fd == -1) continue;
+            
+            int mfd = mgmt_clients[m].fd;
+            int m_readable = FD_ISSET(mfd, &read_set);
+            int m_writable = FD_ISSET(mfd, &write_set);
+            
+            switch (mgmt_clients[m].state) {
+                case MGMT_STATE_READING: {
+                    if (m_readable) {
+                        /* Leer datos no bloqueante */
+                        size_t needed = sizeof(mgmt_message_t) - mgmt_clients[m].recv_len;
+                        ssize_t n = recv(mfd, 
+                                        mgmt_clients[m].recv_buf + mgmt_clients[m].recv_len,
+                                        needed, 0);
+                        
+                        if (n > 0) {
+                            mgmt_clients[m].recv_len += (size_t)n;
+                            
+                            /* Si tenemos el mensaje completo, procesarlo */
+                            if (mgmt_clients[m].recv_len >= sizeof(mgmt_message_t)) {
+                                /* Procesar comando y generar respuesta */
+                                mgmt_message_t *msg = (mgmt_message_t*)mgmt_clients[m].recv_buf;
+                                int resp_size = mgmt_process_command_nb(msg, 
+                                                    mgmt_clients[m].send_buf,
+                                                    sizeof(mgmt_clients[m].send_buf));
+                                
+                                if (resp_size > 0) {
+                                    mgmt_clients[m].send_len = (size_t)resp_size;
+                                    mgmt_clients[m].send_sent = 0;
+                                    mgmt_clients[m].state = MGMT_STATE_WRITING;
+                                } else {
+                                    mgmt_clients[m].state = MGMT_STATE_DONE;
+                                }
+                            }
+                        } else if (n == 0) {
+                            /* Cliente cerró conexión */
+                            mgmt_clients[m].state = MGMT_STATE_DONE;
+                        } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                            /* Error real */
+                            mgmt_clients[m].state = MGMT_STATE_DONE;
+                        }
+                    }
+                } break;
+                
+                case MGMT_STATE_WRITING: {
+                    if (m_writable) {
+                        /* Escribir datos no bloqueante */
+                        size_t remaining = mgmt_clients[m].send_len - mgmt_clients[m].send_sent;
+                        ssize_t n = send(mfd,
+                                        mgmt_clients[m].send_buf + mgmt_clients[m].send_sent,
+                                        remaining, 0);
+                        
+                        if (n > 0) {
+                            mgmt_clients[m].send_sent += (size_t)n;
+                            
+                            /* Si terminamos de enviar, cerramos */
+                            if (mgmt_clients[m].send_sent >= mgmt_clients[m].send_len) {
+                                mgmt_clients[m].state = MGMT_STATE_DONE;
+                            }
+                        } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                            /* Error real */
+                            mgmt_clients[m].state = MGMT_STATE_DONE;
+                        }
+                    }
+                } break;
+                
+                case MGMT_STATE_DONE: {
+                    /* Cerrar y limpiar */
+                    printf("[INF] Management client closing (fd=%d)\n", mfd);
+                    close(mfd);
+                    FD_CLR(mfd, &master_set);
+                    mgmt_clients[m].fd = -1;
+                    mgmt_clients[m].recv_len = 0;
+                    mgmt_clients[m].send_len = 0;
+                    mgmt_clients[m].send_sent = 0;
+                } break;
             }
         }
     }

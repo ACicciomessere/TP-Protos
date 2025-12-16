@@ -136,6 +136,8 @@ int mgmt_send_simple_response(int sock, mgmt_simple_response_t *response);
 // Funciones para el servidor
 int mgmt_server_start(int port);
 int mgmt_handle_client(int client_sock);
+int mgmt_process_command_nb(const mgmt_message_t *msg, void *response_buf,
+                            size_t buf_size);
 
 // Funciones para memoria compartida
 int mgmt_init_shared_memory(void);

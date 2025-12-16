@@ -591,6 +591,224 @@ int mgmt_handle_client(int client_sock) {
 }
 
 /* =========================================================================
+ * Procesamiento de comando de management para modo no bloqueante
+ * Recibe el mensaje ya leído y devuelve la respuesta en response_buf
+ * Retorna el tamaño de la respuesta, o -1 si hay error
+ * ========================================================================= */
+
+int mgmt_process_command_nb(const mgmt_message_t* msg, void* response_buf, size_t buf_size) {
+    if (g_shared_data == NULL || msg == NULL || response_buf == NULL) {
+        return -1;
+    }
+
+    switch (msg->command) {
+        case CMD_ADD_USER: {
+            mgmt_simple_response_t response;
+            memset(&response, 0, sizeof(response));
+
+            int result = add_user(msg->username, msg->password);
+            if (result == 0) {
+                response.success = 1;
+                snprintf(response.message, sizeof(response.message),
+                         "Usuario %s agregado exitosamente", msg->username);
+            } else if (result == -1) {
+                response.success = 0;
+                snprintf(response.message, sizeof(response.message),
+                         "Error: El usuario %s ya existe", msg->username);
+            } else {
+                response.success = 0;
+                snprintf(response.message, sizeof(response.message),
+                         "Error: No hay espacio para más usuarios");
+            }
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_DEL_USER: {
+            mgmt_simple_response_t response;
+            memset(&response, 0, sizeof(response));
+
+            int result = delete_user(msg->username);
+            if (result == 0) {
+                response.success = 1;
+                snprintf(response.message, sizeof(response.message),
+                         "Usuario %s eliminado exitosamente", msg->username);
+            } else {
+                response.success = 0;
+                snprintf(response.message, sizeof(response.message),
+                         "Error: Usuario %s no encontrado", msg->username);
+            }
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_LIST_USERS: {
+            mgmt_users_response_t response;
+            memset(&response, 0, sizeof(response));
+
+            response.user_count = get_users(response.users, MAX_USERS);
+            response.success    = 1;
+            snprintf(response.message, sizeof(response.message),
+                     "Lista de usuarios obtenida (%d usuarios)", response.user_count);
+
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_STATS: {
+            mgmt_stats_response_t response;
+            memset(&response, 0, sizeof(response));
+
+            get_stats(&response.stats);
+
+            pthread_mutex_lock(&g_shared_data->users_mutex);
+            int active_users = 0;
+            for (int i = 0; i < g_shared_data->user_count; i++) {
+                if (g_shared_data->users[i].active) {
+                    active_users++;
+                }
+            }
+            pthread_mutex_unlock(&g_shared_data->users_mutex);
+
+            response.user_count = active_users;
+            response.success    = 1;
+            snprintf(response.message, sizeof(response.message),
+                     "Estadísticas generales obtenidas (%d usuarios configurados)",
+                     active_users);
+
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_SET_TIMEOUT: {
+            mgmt_simple_response_t response;
+            memset(&response, 0, sizeof(response));
+
+            int ms = atoi(msg->username);
+            if (ms > 0) {
+                g_connection_timeout_ms = ms;
+                response.success = 1;
+                snprintf(response.message, sizeof(response.message),
+                         "Timeout de conexión configurado en %d ms", ms);
+            } else {
+                response.success = 0;
+                snprintf(response.message, sizeof(response.message),
+                         "Valor de timeout inválido");
+            }
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_SET_BUFFER: {
+            mgmt_simple_response_t response;
+            memset(&response, 0, sizeof(response));
+
+            int bytes = atoi(msg->username);
+            if (bytes > 0) {
+                g_buffer_size = bytes;
+                response.success = 1;
+                snprintf(response.message, sizeof(response.message),
+                         "Tamaño de buffer configurado en %d bytes", bytes);
+            } else {
+                response.success = 0;
+                snprintf(response.message, sizeof(response.message),
+                         "Valor de buffer inválido");
+            }
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_SET_MAX_CLIENTS: {
+            mgmt_simple_response_t response;
+            memset(&response, 0, sizeof(response));
+
+            int num = atoi(msg->username);
+            if (num > 0) {
+                g_max_clients = num;
+                response.success = 1;
+                snprintf(response.message, sizeof(response.message),
+                         "Máximo de clientes configurado en %d", num);
+            } else {
+                response.success = 0;
+                snprintf(response.message, sizeof(response.message),
+                         "Valor de máximo de clientes inválido");
+            }
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_ENABLE_DISSECTORS: {
+            mgmt_simple_response_t response;
+            memset(&response, 0, sizeof(response));
+            g_dissectors_enabled = true;
+            response.success = 1;
+            snprintf(response.message, sizeof(response.message),
+                     "Disectores habilitados");
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_DISABLE_DISSECTORS: {
+            mgmt_simple_response_t response;
+            memset(&response, 0, sizeof(response));
+            g_dissectors_enabled = false;
+            response.success = 1;
+            snprintf(response.message, sizeof(response.message),
+                     "Disectores deshabilitados");
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_RELOAD_CONFIG: {
+            mgmt_simple_response_t response;
+            memset(&response, 0, sizeof(response));
+            response.success = 1;
+            snprintf(response.message, sizeof(response.message),
+                     "Configuración recargada exitosamente");
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        case CMD_GET_CONFIG: {
+            mgmt_config_response_t response;
+            memset(&response, 0, sizeof(response));
+
+            response.success          = 1;
+            response.timeout_ms       = g_connection_timeout_ms;
+            response.buffer_size      = g_buffer_size;
+            response.max_clients      = g_max_clients;
+            response.dissectors_enabled = g_dissectors_enabled ? 1 : 0;
+            snprintf(response.message, sizeof(response.message),
+                     "Configuración actual obtenida");
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+
+        default: {
+            mgmt_simple_response_t response;
+            memset(&response, 0, sizeof(response));
+            response.success = 0;
+            snprintf(response.message, sizeof(response.message),
+                     "Comando no reconocido");
+            if (buf_size < sizeof(response)) return -1;
+            memcpy(response_buf, &response, sizeof(response));
+            return sizeof(response);
+        }
+    }
+}
+
+/* =========================================================================
  * Cliente de management
  * ========================================================================= */
 
