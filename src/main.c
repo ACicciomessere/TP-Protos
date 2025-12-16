@@ -305,18 +305,20 @@ static int handle_greeting_nb(client_t *cl, struct socks5args *args) {
     if (ver != SOCKS_VERSION || nmethods == 0) return -1;
     if (cl->hs_len < (size_t)(2 + nmethods)) return 0;
 
+    uint8_t method = -1;
+
     for(int i = 0; i < nmethods; i++) {
         if (cl->hs_buf[2 + i] == SOCKS5_AUTH_USERPASS) {
-            cl->state = STATE_AUTH;
-            return 1;
+            method = SOCKS5_AUTH_USERPASS;
+            break;
         }
     }
-
+    
     hs_consume(cl, 2 + nmethods);
 
-    uint8_t resp[2] = { SOCKS_VERSION, SOCKS5_AUTH_USERPASS };
+    uint8_t resp[2] = { SOCKS_VERSION, method };
     ssize_t s = send(cl->client_fd, resp, 2, 0);
-    if (s != 2) return -1;
+    if (s != 2 || method != SOCKS5_AUTH_USERPASS) return -1;
 
     cl->state = STATE_AUTH;
     return 1;
