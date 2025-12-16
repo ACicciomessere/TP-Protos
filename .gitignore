@@ -1,5 +1,10 @@
+ubuntu-22.04.5-desktop-amd64.iso
+metrics.log
+bin
+obj
 .vscode
 bin/
 *.o
 bin/client
 bin/socks5
+/*.log

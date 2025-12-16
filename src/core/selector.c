@@ -34,11 +34,29 @@ static void noop_handler(int signal) {
     // usado solo para interrumpir pselect
 }
 
-static struct selector_init_config global_config;
+static const struct timespec DEFAULT_SELECT_TIMEOUT = {
+    .tv_sec = 1,
+    .tv_nsec = 0,
+};
+
+static struct selector_init_config global_config = {
+    .signal = 0,
+    .select_timeout = {0, 0},
+};
+
+static struct timespec sanitize_timeout(struct timespec timeout) {
+    if (timeout.tv_sec == 0 && timeout.tv_nsec == 0) {
+        return DEFAULT_SELECT_TIMEOUT;
+    }
+    return timeout;
+}
 static sigset_t signal_block_set, signal_empty_set;
 
 selector_status selector_initialize(const struct selector_init_config* config) {
-    memcpy(&global_config, config, sizeof(global_config));
+    const struct selector_init_config *cfg = config ? config : &global_config;
+
+    memcpy(&global_config, cfg, sizeof(global_config));
+    global_config.select_timeout = sanitize_timeout(global_config.select_timeout);
     selector_status status = SELECTOR_SUCCESS;
 
     struct sigaction action = {
@@ -136,7 +154,7 @@ fd_selector selector_create(size_t initial_capacity) {
     struct selector_instance* sel = calloc(1, sizeof(*sel));
     if (!sel) return NULL;
 
-    sel->default_timeout = global_config.select_timeout;
+    sel->default_timeout = sanitize_timeout(global_config.select_timeout);
     if (expand_capacity(sel, initial_capacity) != SELECTOR_SUCCESS) {
         free(sel);
         return NULL;

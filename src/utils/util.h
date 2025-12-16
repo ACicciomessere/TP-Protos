@@ -1,3 +1,7 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #ifndef _UTIL_H_
 #define _UTIL_H_
 
