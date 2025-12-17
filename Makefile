@@ -1,23 +1,60 @@
 include ./Makefile.inc
 
-SERVER_SOURCES=$(wildcard src/*.c src/server/*.c)
-CLIENT_SOURCES=$(wildcard src/client/*.c)
-SHARED_SOURCES=$(wildcard src/shared/*.c)
+# Agrupamos fuentes por sub-módulo para poder combinarlas sin duplicar
+CORE_SOURCES=$(wildcard src/core/*.c)
+UTIL_SOURCES=$(wildcard src/utils/*.c)
+PROTOCOL_SOURCES=$(wildcard src/protocols/*/*.c)
+SRC_ROOT_SOURCES=$(wildcard src/*.c)
+
+# Fuentes compartidas entre servidor y cliente
+SHARED_SOURCES=$(CORE_SOURCES) $(UTIL_SOURCES) src/shared.c
+
+# Fuentes exclusivas del servidor (todo menos el cliente y los tests)
+SERVER_SOURCES=$(filter-out src/client.c src/shared.c $(wildcard src/tests/*.c), $(SRC_ROOT_SOURCES)) $(PROTOCOL_SOURCES)
+
+# Fuente del cliente de gestión
+CLIENT_SOURCES=src/client.c
+
+# Fuentes de test
+TEST_SOURCES=$(wildcard src/tests/*.c)
+
+# Tests individuales
+TEST_INDIVIDUAL_SOURCES=$(wildcard src/tests/*.c)
+# Tests con main propio
+MAIN_TESTS=$(TEST_INDIVIDUAL_SOURCES)
 
 OBJECTS_FOLDER=./obj
 OUTPUT_FOLDER=./bin
+TEST_FOLDER=./test
 
 SERVER_OBJECTS=$(SERVER_SOURCES:src/%.c=obj/%.o)
 CLIENT_OBJECTS=$(CLIENT_SOURCES:src/%.c=obj/%.o)
 SHARED_OBJECTS=$(SHARED_SOURCES:src/%.c=obj/%.o)
+TEST_OBJECTS=$(TEST_SOURCES:src/%.c=obj/%.o)
 
 SERVER_OUTPUT_FILE=$(OUTPUT_FOLDER)/socks5
 CLIENT_OUTPUT_FILE=$(OUTPUT_FOLDER)/client
+TEST_OUTPUT_FILE=$(OUTPUT_FOLDER)/test
 
-all: server client
+all: server client tests
+
+# Optional tools (kept in C to avoid external dependencies like python/matplotlib)
+tools: $(OUTPUT_FOLDER)/sink_server $(OUTPUT_FOLDER)/plot_stress $(OUTPUT_FOLDER)/stress_client
 
 server: $(SERVER_OUTPUT_FILE)
 client: $(CLIENT_OUTPUT_FILE)
+test: $(TEST_OUTPUT_FILE)
+
+# Compilar tests individuales
+tests: $(MAIN_TESTS:src/tests/%.c=$(TEST_FOLDER)/%)
+
+# Objetos del servidor sin main para tests que los necesiten
+TEST_SERVER_OBJECTS:=$(filter-out obj/main.o, $(SERVER_OBJECTS))
+
+# Regla para tests con main propio
+$(TEST_FOLDER)/%: src/tests/%.c $(SHARED_OBJECTS) $(TEST_SERVER_OBJECTS)
+	mkdir -p $(TEST_FOLDER)
+	$(COMPILER) $(COMPILERFLAGS) -I src $(LDFLAGS) $< $(SHARED_OBJECTS) $(TEST_SERVER_OBJECTS) -o $@
 
 $(SERVER_OUTPUT_FILE): $(SERVER_OBJECTS) $(SHARED_OBJECTS)
 	mkdir -p $(OUTPUT_FOLDER)
@@ -27,14 +64,79 @@ $(CLIENT_OUTPUT_FILE): $(CLIENT_OBJECTS) $(SHARED_OBJECTS)
 	mkdir -p $(OUTPUT_FOLDER)
 	$(COMPILER) $(COMPILERFLAGS) $(LDFLAGS) $(CLIENT_OBJECTS) $(SHARED_OBJECTS) -o $(CLIENT_OUTPUT_FILE)
 
+$(TEST_OUTPUT_FILE): $(TEST_OBJECTS) $(TEST_SERVER_OBJECTS) $(SHARED_OBJECTS)
+	mkdir -p $(OUTPUT_FOLDER)
+	$(COMPILER) $(COMPILERFLAGS) $(LDFLAGS) $(TEST_OBJECTS) $(TEST_SERVER_OBJECTS) $(SHARED_OBJECTS) -o $(TEST_OUTPUT_FILE)
+
 clean:
 	rm -rf $(OUTPUT_FOLDER)
 	rm -rf $(OBJECTS_FOLDER)
+	rm -rf $(TEST_FOLDER)
 
 obj/%.o: src/%.c
-	mkdir -p $(OBJECTS_FOLDER)/server
-	mkdir -p $(OBJECTS_FOLDER)/client
-	mkdir -p $(OBJECTS_FOLDER)/shared
+	mkdir -p $(dir $@)
 	$(COMPILER) $(COMPILERFLAGS) -c $< -o $@
 
-.PHONY: all server client clean
+.PHONY: all server client test tests check-tests clean
+
+TOOLS_FOLDER=tools
+
+SINK_C_SOURCES=$(TOOLS_FOLDER)/sink_server.c
+SINK_BINARY=$(OUTPUT_FOLDER)/sink_server
+
+PLOT_C_SOURCES=$(TOOLS_FOLDER)/plot_stress.c
+PLOT_BINARY=$(OUTPUT_FOLDER)/plot_stress
+
+STRESS_CLIENT_SOURCES=src/tests/stress_client.c
+STRESS_CLIENT_BINARY=$(OUTPUT_FOLDER)/stress_client
+
+$(SINK_BINARY): $(SINK_C_SOURCES)
+	mkdir -p $(OUTPUT_FOLDER)
+	$(COMPILER) $(COMPILERFLAGS) -O2 -std=c11 -pthread $< -o $@
+
+$(PLOT_BINARY): $(PLOT_C_SOURCES)
+	mkdir -p $(OUTPUT_FOLDER)
+	$(COMPILER) $(COMPILERFLAGS) -O2 -std=c11 $< -o $@
+
+$(STRESS_CLIENT_BINARY): $(STRESS_CLIENT_SOURCES)
+	mkdir -p $(OUTPUT_FOLDER)
+	$(COMPILER) $(COMPILERFLAGS) -O2 -std=c11 -pthread $< -o $@
+
+# Uso de targets de tests:
+# make tests       - Compila tests individuales con main() en carpeta ./test/
+# make check-tests - Compila tests que requieren framework 'check' (opcional)
+# make test        - Compila todos los tests en un solo ejecutable (original)
+
+.PHONY: tools
+
+# =============================================================================
+# Stress test target using stress_client
+# Usage: make stress [STRESS_CONNS=500] [STRESS_BYTES=1048576]
+# =============================================================================
+
+STRESS_CONNS ?= 500
+STRESS_BYTES ?= 1048576
+STRESS_USER ?= testuser
+STRESS_PASS ?= testpass
+
+stress: server tools
+	@echo "[STRESS] Setting up test user..."
+	@echo "$(STRESS_USER):$(STRESS_PASS)" > auth.db
+	@echo "[STRESS] Starting sink_server on port 8888..."
+	@./bin/sink_server & SINK_PID=$$!; \
+	sleep 1; \
+	echo "[STRESS] Starting SOCKS5 server on port 1080..."; \
+	./bin/socks5 -p 1080 & SOCKS_PID=$$!; \
+	sleep 2; \
+	echo "[STRESS] Running stress test ($(STRESS_CONNS) connections, $(STRESS_BYTES) bytes each)..."; \
+	echo ""; \
+	./bin/stress_client -H 127.0.0.1 -P 1080 -D 127.0.0.1 -Q 8888 \
+		-c $(STRESS_CONNS) -b $(STRESS_BYTES) -U $(STRESS_USER) -W $(STRESS_PASS); \
+	STATUS=$$?; \
+	echo ""; \
+	echo "[STRESS] Stopping servers..."; \
+	kill $$SINK_PID $$SOCKS_PID 2>/dev/null || true; \
+	echo "[STRESS] Done."; \
+	exit $$STATUS
+
+.PHONY: stress

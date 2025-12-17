@@ -1,0 +1,2 @@
+timestamp,connections,bytes_per_conn,elapsed_s,throughput_MBps,success,failed,total_MB
+2025-12-15T04:03:25,500,1048576,3.340,149.71,500,0,500.04
