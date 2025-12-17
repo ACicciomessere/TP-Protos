@@ -108,3 +108,35 @@ $(STRESS_CLIENT_BINARY): $(STRESS_CLIENT_SOURCES)
 # make test        - Compila todos los tests en un solo ejecutable (original)
 
 .PHONY: tools
+
+# =============================================================================
+# Stress test target using stress_client
+# Usage: make stress [STRESS_CONNS=500] [STRESS_BYTES=1048576]
+# =============================================================================
+
+STRESS_CONNS ?= 500
+STRESS_BYTES ?= 1048576
+STRESS_USER ?= testuser
+STRESS_PASS ?= testpass
+
+stress: server tools
+	@echo "[STRESS] Setting up test user..."
+	@echo "$(STRESS_USER):$(STRESS_PASS)" > auth.db
+	@echo "[STRESS] Starting sink_server on port 8888..."
+	@./bin/sink_server & SINK_PID=$$!; \
+	sleep 1; \
+	echo "[STRESS] Starting SOCKS5 server on port 1080..."; \
+	./bin/socks5 -p 1080 & SOCKS_PID=$$!; \
+	sleep 2; \
+	echo "[STRESS] Running stress test ($(STRESS_CONNS) connections, $(STRESS_BYTES) bytes each)..."; \
+	echo ""; \
+	./bin/stress_client -H 127.0.0.1 -P 1080 -D 127.0.0.1 -Q 8888 \
+		-c $(STRESS_CONNS) -b $(STRESS_BYTES) -U $(STRESS_USER) -W $(STRESS_PASS); \
+	STATUS=$$?; \
+	echo ""; \
+	echo "[STRESS] Stopping servers..."; \
+	kill $$SINK_PID $$SOCKS_PID 2>/dev/null || true; \
+	echo "[STRESS] Done."; \
+	exit $$STATUS
+
+.PHONY: stress
