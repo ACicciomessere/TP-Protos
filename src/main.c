@@ -30,7 +30,9 @@
 
 typedef enum {
     STATE_GREETING,
+    STATE_GREETING_REPLY,   /* Escribiendo respuesta greeting */
     STATE_AUTH,
+    STATE_AUTH_REPLY,       /* Escribiendo respuesta auth */
     STATE_REQUEST,
     STATE_CONNECTING,
     STATE_RELAYING,
@@ -68,6 +70,12 @@ typedef struct {
 
     int closed;
     int resolving;
+
+    /* --- handshake send buffer (non-blocking writes) --- */
+    unsigned char hs_send_buf[32];  /* Máx para respuestas handshake */
+    size_t        hs_send_len;      /* Bytes a enviar */
+    size_t        hs_send_sent;     /* Bytes ya enviados */
+    client_state  hs_next_state;    /* Estado al completar envío */
 } client_t;
 
 client_t clients[MAX_CLIENTS];
@@ -211,6 +219,41 @@ static void reset_handshake_buffer(client_t *cl) {
     cl->req_addr[0] = '\0';
     cl->req_port = 0;
     cl->req_ready = 0;
+    /* Reset send buffer */
+    cl->hs_send_len = 0;
+    cl->hs_send_sent = 0;
+    cl->hs_next_state = STATE_DONE;
+}
+
+/* Encola datos para envío non-blocking en handshake */
+static int hs_queue_send(client_t *cl, const void *data, size_t len, client_state next) {
+    if (len > sizeof(cl->hs_send_buf)) return -1;
+    memcpy(cl->hs_send_buf, data, len);
+    cl->hs_send_len = len;
+    cl->hs_send_sent = 0;
+    cl->hs_next_state = next;
+    return 0;
+}
+
+/* Intenta enviar datos pendientes del handshake.
+ * return: 1 = completado, 0 = pendiente (EAGAIN), -1 = error */
+static int hs_try_flush(client_t *cl) {
+    while (cl->hs_send_sent < cl->hs_send_len) {
+        ssize_t n = send(cl->client_fd,
+                        cl->hs_send_buf + cl->hs_send_sent,
+                        cl->hs_send_len - cl->hs_send_sent, 0);
+        if (n > 0) {
+            cl->hs_send_sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return 0;  /* Intentar después */
+        }
+        return -1;  /* Error */
+    }
+    cl->hs_send_len = 0;
+    cl->hs_send_sent = 0;
+    return 1;  /* Completado */
 }
 
 void remove_client(int i, fd_set *master_set) {
@@ -371,7 +414,7 @@ static int handle_greeting_nb(client_t *cl, struct socks5args *args) {
     if (ver != SOCKS_VERSION || nmethods == 0) return -1;
     if (cl->hs_len < (size_t)(2 + nmethods)) return 0;
 
-    uint8_t method = -1;
+    uint8_t method = 0xFF; /* NO ACCEPTABLE METHODS por defecto */
 
     for(int i = 0; i < nmethods; i++) {
         if (cl->hs_buf[2 + i] == SOCKS5_AUTH_USERPASS) {
@@ -383,10 +426,12 @@ static int handle_greeting_nb(client_t *cl, struct socks5args *args) {
     hs_consume(cl, 2 + nmethods);
 
     uint8_t resp[2] = { SOCKS_VERSION, method };
-    ssize_t s = send(cl->client_fd, resp, 2, 0);
-    if (s != 2 || method != SOCKS5_AUTH_USERPASS) return -1;
-
-    cl->state = STATE_AUTH;
+    
+    /* Encolar respuesta para envío non-blocking */
+    client_state next = (method == SOCKS5_AUTH_USERPASS) ? STATE_AUTH : STATE_ERROR;
+    if (hs_queue_send(cl, resp, 2, next) < 0) return -1;
+    
+    cl->state = STATE_GREETING_REPLY;
     return 1;
 }
 
@@ -414,15 +459,15 @@ static int handle_auth_nb(client_t *cl, struct socks5args *args) {
 
     int ok = validateUser(user, pass, args);
 
-    uint8_t resp[2] = { 0x01, ok ? 0x00 : 0x01 };
-    ssize_t s = send(cl->client_fd, resp, 2, 0);
-    if (s != 2) return -1;
-
     hs_consume(cl, total);
 
-    if (ok) cl->state = STATE_REQUEST;
-    else    cl->state = STATE_ERROR;
-
+    uint8_t resp[2] = { 0x01, ok ? 0x00 : 0x01 };
+    
+    /* Encolar respuesta para envío non-blocking */
+    client_state next = ok ? STATE_REQUEST : STATE_ERROR;
+    if (hs_queue_send(cl, resp, 2, next) < 0) return -1;
+    
+    cl->state = STATE_AUTH_REPLY;
     return 1;
 }
 
@@ -613,11 +658,18 @@ int main(int argc, char **argv) {
 
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (clients[i].client_fd == -1) continue;
-            if (clients[i].state != STATE_RELAYING) continue;
-            if (clients[i].remote_fd == -1) continue;
-
-            if (clients[i].c2r_len != 0) FD_SET(clients[i].remote_fd, &write_set);
-            if (clients[i].r2c_len != 0) FD_SET(clients[i].client_fd, &write_set);
+            
+            /* Handshake writes pendientes */
+            if (clients[i].state == STATE_GREETING_REPLY ||
+                clients[i].state == STATE_AUTH_REPLY) {
+                FD_SET(clients[i].client_fd, &write_set);
+            }
+            
+            /* Relay writes */
+            if (clients[i].state == STATE_RELAYING && clients[i].remote_fd != -1) {
+                if (clients[i].c2r_len != 0) FD_SET(clients[i].remote_fd, &write_set);
+                if (clients[i].r2c_len != 0) FD_SET(clients[i].client_fd, &write_set);
+            }
         }
 
         /* Agregar clientes de management al write_set si tienen datos para enviar */
@@ -792,6 +844,14 @@ int main(int argc, char **argv) {
                     if (step < 0) clients[i].state = STATE_ERROR;
                 } break;
 
+                case STATE_GREETING_REPLY: {
+                    if (w_client) {
+                        int res = hs_try_flush(&clients[i]);
+                        if (res < 0) { clients[i].state = STATE_ERROR; break; }
+                        if (res == 1) { clients[i].state = clients[i].hs_next_state; }
+                    }
+                } break;
+
                 case STATE_AUTH: {
                     if (r_client) {
                         int rr = hs_recv_into(&clients[i]);
@@ -800,6 +860,14 @@ int main(int argc, char **argv) {
                     }
                     int step = handle_auth_nb(&clients[i], &args);
                     if (step < 0) clients[i].state = STATE_ERROR;
+                } break;
+
+                case STATE_AUTH_REPLY: {
+                    if (w_client) {
+                        int res = hs_try_flush(&clients[i]);
+                        if (res < 0) { clients[i].state = STATE_ERROR; break; }
+                        if (res == 1) { clients[i].state = clients[i].hs_next_state; }
+                    }
                 } break;
 
                 case STATE_REQUEST: {
