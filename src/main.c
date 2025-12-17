@@ -777,10 +777,11 @@ int main(int argc, char **argv) {
                             inet_ntop(AF_INET6, &s->sin6_addr, ip_str, sizeof(ip_str));
                             port_src = ntohs(s->sin6_port);
                         }
-                        log_access(cl->auth_user[0] ? cl->auth_user : NULL,
+                        log_access(cl->auth_user[0] ? cl->auth_user : "anonymous",
+                                   "CONNECT",
+                                   "%s:%u -> %s:%u",
                                    ip_str, port_src,
-                                   cl->req_addr, cl->req_port,
-                                   0 /* SOCKS success */);
+                                   cl->req_addr, cl->req_port);
                     }
 
                     printf("[INF] CONNECT done for fd=%d, remote_fd=%d, switching to RELAYING\n",
