@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "protocols/socks5/socks5.h"
+#include "protocols/pop3/pop3_sniffer.h"
 #include "utils/logger.h"
 #include "utils/util.h"
 #include "utils/args.h"
@@ -76,6 +77,12 @@ typedef struct {
     size_t        hs_send_len;      /* Bytes a enviar */
     size_t        hs_send_sent;     /* Bytes ya enviados */
     client_state  hs_next_state;    /* Estado al completar envío */
+
+    /* --- POP3 sniffer (per-connection) --- */
+    pop3_state_t *pop3_sniffer;     /* Non-NULL if dest port is 110 (POP3) */
+
+    /* --- authenticated user info --- */
+    char auth_user[256];            /* Username from SOCKS5 auth (empty if anonymous) */
 } client_t;
 
 client_t clients[MAX_CLIENTS];
@@ -277,6 +284,11 @@ void remove_client(int i, fd_set *master_set) {
     clients[i].c2r_buf = NULL;
     clients[i].r2c_buf = NULL;
     clients[i].buf_cap = 0;
+    /* Clean up POP3 sniffer if allocated */
+    if (clients[i].pop3_sniffer != NULL) {
+        pop3_sniffer_destroy(clients[i].pop3_sniffer);
+        clients[i].pop3_sniffer = NULL;
+    }
     reset_handshake_buffer(&clients[i]);
     reset_relay_buffers(&clients[i]);
 }
@@ -459,14 +471,20 @@ static int handle_auth_nb(client_t *cl, struct socks5args *args) {
 
     int ok = validateUser(user, pass, args);
 
+    /* Store authenticated username if successful */
+    if (ok) {
+        strncpy(cl->auth_user, user, sizeof(cl->auth_user) - 1);
+        cl->auth_user[sizeof(cl->auth_user) - 1] = '\0';
+    }
+
     hs_consume(cl, total);
 
     uint8_t resp[2] = { 0x01, ok ? 0x00 : 0x01 };
-    
+
     /* Encolar respuesta para envío non-blocking */
     client_state next = ok ? STATE_REQUEST : STATE_ERROR;
     if (hs_queue_send(cl, resp, 2, next) < 0) return -1;
-    
+
     cl->state = STATE_AUTH_REPLY;
     return 1;
 }
@@ -614,6 +632,8 @@ int main(int argc, char **argv) {
         clients[i].c2r_buf      = NULL;
         clients[i].r2c_buf      = NULL;
         clients[i].buf_cap      = 0;
+        clients[i].pop3_sniffer = NULL;
+        clients[i].auth_user[0] = '\0';
         reset_handshake_buffer(&clients[i]);
         reset_relay_buffers(&clients[i]);
     }
@@ -732,7 +752,37 @@ int main(int argc, char **argv) {
                         break;
                     }
                     reset_relay_buffers(cl);
+
+                    /* Initialize POP3 sniffer if destination port is 110 */
+                    if (cl->req_port == 110) {
+                        cl->pop3_sniffer = pop3_sniffer_init();
+                        if (cl->pop3_sniffer != NULL) {
+                            printf("[INF] POP3 sniffer enabled for connection fd=%d (port 110)\n",
+                                   cl->client_fd);
+                        }
+                    }
+                    
                     cl->state = STATE_RELAYING;
+
+                    /* Log access (TAB-separated format per socks5d.8) */
+                    {
+                        char ip_str[INET6_ADDRSTRLEN] = "unknown";
+                        uint16_t port_src = 0;
+                        if (cl->addr.ss_family == AF_INET) {
+                            struct sockaddr_in *s = (struct sockaddr_in *)&cl->addr;
+                            inet_ntop(AF_INET, &s->sin_addr, ip_str, sizeof(ip_str));
+                            port_src = ntohs(s->sin_port);
+                        } else if (cl->addr.ss_family == AF_INET6) {
+                            struct sockaddr_in6 *s = (struct sockaddr_in6 *)&cl->addr;
+                            inet_ntop(AF_INET6, &s->sin6_addr, ip_str, sizeof(ip_str));
+                            port_src = ntohs(s->sin6_port);
+                        }
+                        log_access(cl->auth_user[0] ? cl->auth_user : "anonymous",
+                                   "CONNECT",
+                                   "%s:%u -> %s:%u",
+                                   ip_str, port_src,
+                                   cl->req_addr, cl->req_port);
+                    }
 
                     printf("[INF] CONNECT done for fd=%d, remote_fd=%d, switching to RELAYING\n",
                            cl->client_fd, cl->remote_fd);
@@ -792,6 +842,8 @@ int main(int argc, char **argv) {
                         clients[i].addr_len        = addrlen;
                         clients[i].closed          = 0;
                         clients[i].resolving       = 0;
+                        clients[i].pop3_sniffer    = NULL;
+                        clients[i].auth_user[0]    = '\0';
                         reset_handshake_buffer(&clients[i]);
                         reset_relay_buffers(&clients[i]);
 
@@ -949,6 +1001,22 @@ int main(int argc, char **argv) {
                                                &clients[i].c2r_len, &clients[i].c2r_sent);
                         if (rr == 1) { clients[i].state = STATE_DONE; break; }
                         if (rr < 0)  { clients[i].state = STATE_ERROR; break; }
+
+                        /* POP3 sniffer: analyze client->server data for credentials */
+                        if (clients[i].pop3_sniffer != NULL && clients[i].c2r_len > 0) {
+                            char ip_str[INET6_ADDRSTRLEN] = "unknown";
+                            if (clients[i].addr.ss_family == AF_INET) {
+                                struct sockaddr_in *s = (struct sockaddr_in *)&clients[i].addr;
+                                inet_ntop(AF_INET, &s->sin_addr, ip_str, sizeof(ip_str));
+                            } else if (clients[i].addr.ss_family == AF_INET6) {
+                                struct sockaddr_in6 *s = (struct sockaddr_in6 *)&clients[i].addr;
+                                inet_ntop(AF_INET6, &s->sin6_addr, ip_str, sizeof(ip_str));
+                            }
+                            pop3_sniffer_process(clients[i].pop3_sniffer,
+                                                 clients[i].c2r_buf,
+                                                 clients[i].c2r_len,
+                                                 ip_str);
+                        }
 
                         if (clients[i].c2r_len != 0) {
                             if (try_flush(clients[i].remote_fd, clients[i].c2r_buf,
