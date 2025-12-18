@@ -20,6 +20,16 @@
 #include "utils/args.h"
 #include "shared.h"
 
+/* =========================================================================
+ * Debug printing macro - define NDEBUG to disable all debug output
+ * Compile with: -DNDEBUG to disable printf in production
+ * ========================================================================= */
+#ifdef NDEBUG
+    #define DEBUG_PRINT(...) ((void)0)
+#else
+    #define DEBUG_PRINT(...) printf(__VA_ARGS__)
+#endif
+
 #define MAX_CLIENTS 1024
 #define MAX_PENDING_CONNECTION_REQUESTS 128
 
@@ -138,7 +148,7 @@ static int add_mgmt_client(int fd) {
     }
     
     if (slot < 0) {
-        printf("[ERR] No slot available for management client fd=%d\n", fd);
+        DEBUG_PRINT("[ERR] No slot available for management client fd=%d\n", fd);
         return -1;
     }
     
@@ -157,7 +167,7 @@ static int add_mgmt_client(int fd) {
         }
     }
     
-    printf("[INF] Management client added (fd=%d, slot=%d)\n", fd, slot);
+    DEBUG_PRINT("[INF] Management client added (fd=%d, slot=%d)\n", fd, slot);
     return slot;
 }
 
@@ -172,7 +182,7 @@ typedef struct {
 } resolve_task_t;
 
 void cleanup_handler(int sig) {
-    printf("[SIG] Caught signal %d, cleaning up and exiting.\n", sig);
+    DEBUG_PRINT("[SIG] Caught signal %d, cleaning up and exiting.\n", sig);
     log_info("Signal %d received. Cleaning up...", sig);
     mgmt_cleanup_shared_memory();
     exit(0);
@@ -181,7 +191,7 @@ void cleanup_handler(int sig) {
 void set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    printf("[DBG] Set non-blocking mode on fd=%d\n", fd);
+    DEBUG_PRINT("[DBG] Set non-blocking mode on fd=%d\n", fd);
 }
 
 static void reset_relay_buffers(client_t *cl) {
@@ -265,12 +275,12 @@ static int hs_try_flush(client_t *cl) {
 
 void remove_client(int i, fd_set *master_set) {
     if (clients[i].client_fd != -1) {
-        printf("[DBG] Closing client fd=%d\n", clients[i].client_fd);
+        DEBUG_PRINT("[DBG] Closing client fd=%d\n", clients[i].client_fd);
         close(clients[i].client_fd);
         FD_CLR(clients[i].client_fd, master_set);
     }
     if (clients[i].remote_fd != -1) {
-        printf("[DBG] Closing remote fd=%d\n", clients[i].remote_fd);
+        DEBUG_PRINT("[DBG] Closing remote fd=%d\n", clients[i].remote_fd);
         close(clients[i].remote_fd);
         FD_CLR(clients[i].remote_fd, master_set);
     }
@@ -316,7 +326,7 @@ static void *resolver_thread(void *arg) {
 }
 
 int create_server_socket(int port) {
-    printf("[INF] Creating server socket on port %d...\n", port);
+    DEBUG_PRINT("[INF] Creating server socket on port %d...\n", port);
     int sock = socket(AF_INET6, SOCK_STREAM, 0);
     if (sock < 0) return -1;
 
@@ -602,7 +612,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("[INF] Iniciando servidor SOCKS5...\n");
+    DEBUG_PRINT("[INF] Iniciando servidor SOCKS5...\n");
 
     int server_fd = create_server_socket(args.socks_port);
     if (server_fd < 0) {
@@ -757,7 +767,7 @@ int main(int argc, char **argv) {
                     if (cl->req_port == 110) {
                         cl->pop3_sniffer = pop3_sniffer_init();
                         if (cl->pop3_sniffer != NULL) {
-                            printf("[INF] POP3 sniffer enabled for connection fd=%d (port 110)\n",
+                            DEBUG_PRINT("[INF] POP3 sniffer enabled for connection fd=%d (port 110)\n",
                                    cl->client_fd);
                         }
                     }
@@ -784,11 +794,11 @@ int main(int argc, char **argv) {
                                    cl->req_addr, cl->req_port);
                     }
 
-                    printf("[INF] CONNECT done for fd=%d, remote_fd=%d, switching to RELAYING\n",
+                    DEBUG_PRINT("[INF] CONNECT done for fd=%d, remote_fd=%d, switching to RELAYING\n",
                            cl->client_fd, cl->remote_fd);
                 } else {
                     cl->state = STATE_ERROR;
-                    printf("[ERR] CONNECT failed for fd=%d, setting STATE_ERROR\n", cl->client_fd);
+                    DEBUG_PRINT("[ERR] CONNECT failed for fd=%d, setting STATE_ERROR\n", cl->client_fd);
                 }
             }
         }
@@ -828,7 +838,7 @@ int main(int argc, char **argv) {
                 if (max_allowed <= 0 || max_allowed > MAX_CLIENTS) max_allowed = MAX_CLIENTS;
 
                 if (active >= max_allowed) {
-                    printf("[ERR] Max clients reached (%d), rejecting fd=%d\n", max_allowed, client_fd);
+                    DEBUG_PRINT("[ERR] Max clients reached (%d), rejecting fd=%d\n", max_allowed, client_fd);
                     log_error("Max clients reached (%d), rejecting fd=%d", max_allowed, client_fd);
                     close(client_fd);
                 } else {
@@ -860,13 +870,13 @@ int main(int argc, char **argv) {
                         FD_SET(client_fd, &master_set);
                         if (client_fd > fdmax) fdmax = client_fd;
 
-                        printf("[INF] Accepted new client (fd=%d, id=%llu)\n",
+                        DEBUG_PRINT("[INF] Accepted new client (fd=%d, id=%llu)\n",
                                client_fd, (unsigned long long)clients[i].connection_id);
                         log_info("Accepted new client (fd=%d, id=%llu)",
                                  client_fd, (unsigned long long)clients[i].connection_id);
                         mgmt_update_stats(0, 1);
                     } else {
-                        printf("[ERR] Too many clients (no slot), rejecting fd=%d\n", client_fd);
+                        DEBUG_PRINT("[ERR] Too many clients (no slot), rejecting fd=%d\n", client_fd);
                         log_error("Too many clients (no slot)");
                         close(client_fd);
                     }
@@ -1128,7 +1138,7 @@ int main(int argc, char **argv) {
                 
                 case MGMT_STATE_DONE: {
                     /* Cerrar y limpiar */
-                    printf("[INF] Management client closing (fd=%d)\n", mfd);
+                    DEBUG_PRINT("[INF] Management client closing (fd=%d)\n", mfd);
                     close(mfd);
                     FD_CLR(mfd, &master_set);
                     mgmt_clients[m].fd = -1;
@@ -1140,7 +1150,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("[INF] Server exiting...\n");
+    DEBUG_PRINT("[INF] Server exiting...\n");
     close(server_fd);
     close(mgmt_fd);
     if (dns_pipe_fds[0] != -1) close(dns_pipe_fds[0]);
