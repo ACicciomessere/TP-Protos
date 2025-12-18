@@ -3,3 +3,4 @@ bin/
 *.o
 bin/client
 bin/socks5
+test
