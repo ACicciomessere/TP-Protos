@@ -72,12 +72,14 @@ clean:
 	rm -rf $(OUTPUT_FOLDER)
 	rm -rf $(OBJECTS_FOLDER)
 	rm -rf $(TEST_FOLDER)
+	rm -f auth.db
+	rm -f $(OUTPUT_FOLDER)/sink_server_stress_*
 
 obj/%.o: src/%.c
 	mkdir -p $(dir $@)
 	$(COMPILER) $(COMPILERFLAGS) -c $< -o $@
 
-.PHONY: all server client test tests check-tests clean
+.PHONY: all server client test tests check-tests clean tools stress
 
 TOOLS_FOLDER=tools
 
@@ -112,31 +114,74 @@ $(STRESS_CLIENT_BINARY): $(STRESS_CLIENT_SOURCES)
 # =============================================================================
 # Stress test target using stress_client
 # Usage: make stress [STRESS_CONNS=500] [STRESS_BYTES=1048576]
+#        make stress STRESS_SOCKS_PORT=1081 STRESS_SINK_PORT=8889
 # =============================================================================
 
-STRESS_CONNS ?= 500
-STRESS_BYTES ?= 1048576
-STRESS_USER ?= testuser
-STRESS_PASS ?= testpass
+STRESS_CONNS      ?= 500
+STRESS_BYTES      ?= 1048576
+STRESS_USER       ?= testuser
+STRESS_PASS       ?= testpass
+STRESS_HOST       ?= 127.0.0.1
+
+STRESS_SOCKS_PORT ?= 1080
+STRESS_SINK_PORT  ?= 8888
+
+# Flags extra opcionales para socks5 (ej: -v)
+SOCKS_FLAGS ?=
 
 stress: server tools
-	@echo "[STRESS] Setting up test user..."
-	@echo "$(STRESS_USER):$(STRESS_PASS)" > auth.db
-	@echo "[STRESS] Starting sink_server on port 8888..."
-	@./bin/sink_server & SINK_PID=$$!; \
+	@set -e; \
+	HOST="$(STRESS_HOST)"; \
+	SOCKS_PORT="$(STRESS_SOCKS_PORT)"; \
+	SINK_PORT="$(STRESS_SINK_PORT)"; \
+	CONNS="$(STRESS_CONNS)"; \
+	BYTES="$(STRESS_BYTES)"; \
+	USER="$(STRESS_USER)"; \
+	PASS="$(STRESS_PASS)"; \
+	SOCKS_FLAGS="$(SOCKS_FLAGS)"; \
+	\
+	SOCKS_BIN="$(SERVER_OUTPUT_FILE)"; \
+	STRESS_BIN="$(STRESS_CLIENT_BINARY)"; \
+	SINK_BIN="$(OUTPUT_FOLDER)/sink_server_stress_$$SINK_PORT"; \
+	\
+	echo "[STRESS] Checking required binaries..."; \
+	test -x "$$SOCKS_BIN"; \
+	test -x "$$STRESS_BIN"; \
+	\
+	echo "[STRESS] Writing auth.db..."; \
+	echo "$$USER:$$PASS" > auth.db; \
+	\
+	echo "[STRESS] Ensuring ports are free (SOCKS=$$SOCKS_PORT, SINK=$$SINK_PORT)..."; \
+	if ss -lnt "( sport = :$$SOCKS_PORT )" | grep -q LISTEN; then \
+		echo "[STRESS][ERR] Port $$SOCKS_PORT already in use (SOCKS)."; \
+		exit 1; \
+	fi; \
+	if ss -lnt "( sport = :$$SINK_PORT )" | grep -q LISTEN; then \
+		echo "[STRESS][ERR] Port $$SINK_PORT already in use (sink_server)."; \
+		exit 1; \
+	fi; \
+	\
+	echo "[STRESS] Building sink_server for port $$SINK_PORT..."; \
+	gcc -Wall -pedantic -g -pthread -Wno-pointer-arith -lrt -O2 -std=c11 -pthread \
+		-DSINK_PORT=$$SINK_PORT -DSINK_BIND_ADDR="\"127.0.0.1\"" \
+		tools/sink_server.c -o "$$SINK_BIN"; \
+	chmod +x "$$SINK_BIN"; \
+	\
+	echo "[STRESS] Starting sink_server on $$HOST:$$SINK_PORT..."; \
+	"$$SINK_BIN" >/dev/null 2>&1 & \
+	SINK_PID=$$!; \
 	sleep 1; \
-	echo "[STRESS] Starting SOCKS5 server on port 1080..."; \
-	./bin/socks5 -p 1080 & SOCKS_PID=$$!; \
+	\
+	echo "[STRESS] Starting SOCKS5 server on $$HOST:$$SOCKS_PORT..."; \
+	"$$SOCKS_BIN" -u "$$USER:$$PASS" -p "$$SOCKS_PORT" $$SOCKS_FLAGS >/dev/null 2>&1 & \
+	SOCKS_PID=$$!; \
 	sleep 2; \
-	echo "[STRESS] Running stress test ($(STRESS_CONNS) connections, $(STRESS_BYTES) bytes each)..."; \
+	\
+	trap 'kill $$SINK_PID $$SOCKS_PID 2>/dev/null || true' EXIT INT TERM; \
+	\
+	echo "[STRESS] Running stress test ($$CONNS connections, $$BYTES bytes each)..."; \
 	echo ""; \
-	./bin/stress_client -H 127.0.0.1 -P 1080 -D 127.0.0.1 -Q 8888 \
-		-c $(STRESS_CONNS) -b $(STRESS_BYTES) -U $(STRESS_USER) -W $(STRESS_PASS); \
-	STATUS=$$?; \
+	"$$STRESS_BIN" -H "$$HOST" -P "$$SOCKS_PORT" -D "$$HOST" -Q "$$SINK_PORT" \
+		-c "$$CONNS" -b "$$BYTES" -U "$$USER" -W "$$PASS"; \
 	echo ""; \
-	echo "[STRESS] Stopping servers..."; \
-	kill $$SINK_PID $$SOCKS_PID 2>/dev/null || true; \
-	echo "[STRESS] Done."; \
-	exit $$STATUS
-
-.PHONY: stress
+	echo "[STRESS] Done."
