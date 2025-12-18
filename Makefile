@@ -162,7 +162,12 @@ stress: server tools
 	fi; \
 	\
 	echo "[STRESS] Building sink_server for port $$SINK_PORT..."; \
-	gcc -Wall -pedantic -g -pthread -Wno-pointer-arith -lrt -O2 -std=c11 -pthread \
+	if [ "$$OS" = "Linux" ]; then \
+		RT_FLAG="-lrt"; \
+	else \
+		RT_FLAG=""; \
+	fi; \
+	gcc -Wall -pedantic -g -pthread -Wno-pointer-arith $$RT_FLAG -O2 -std=c11 \
 		-DSINK_PORT=$$SINK_PORT -DSINK_BIND_ADDR="\"127.0.0.1\"" \
 		tools/sink_server.c -o "$$SINK_BIN"; \
 	chmod +x "$$SINK_BIN"; \
