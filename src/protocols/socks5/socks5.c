@@ -114,49 +114,27 @@ static ssize_t sendFull(int fd, const void *buf, size_t n, int flags) {
   return (ssize_t)totalSent;
 }
 
-/* ---- Validación de usuario (archivo + shared memory + args) ---- */
+/* ---- Validación de usuario (shared memory + args) ---- */
 int validateUser(const char *username, const char *password,
                  struct socks5args *args) {
   if (!username || !password) {
     return 0;
   }
 
-  /* 1) auth.db */
-  FILE *file = fopen("auth.db", "r");
-  if (file != NULL) {
-    char line[512];
-    while (fgets(line, sizeof(line), file)) {
-      char *db_user = strtok(line, ":");
-      char *db_pass = strtok(NULL, "\n");
-      if (db_user && db_pass) {
-        if (strcmp(username, db_user) == 0 && strcmp(password, db_pass) == 0) {
-          fclose(file);
-          log_access(username, "AUTH_SUCCESS",
-                     "User authenticated successfully (auth.db)");
-          return 1;
-        }
-      }
-    }
-    fclose(file);
-  }
-
-  /* 2) memoria compartida */
+  /* 1) memoria compartida */
   shared_data_t *sh = mgmt_get_shared_data();
   if (sh) {
-    pthread_mutex_lock(&sh->users_mutex);
     for (int i = 0; i < sh->user_count; i++) {
       if (sh->users[i].active && strcmp(username, sh->users[i].username) == 0 &&
           strcmp(password, sh->users[i].password) == 0) {
-        pthread_mutex_unlock(&sh->users_mutex);
         log_access(username, "AUTH_SUCCESS",
                    "User authenticated successfully (shared)");
         return 1;
       }
     }
-    pthread_mutex_unlock(&sh->users_mutex);
   }
 
-  /* 3) usuarios de línea de comandos (args) */
+  /* 2) usuarios de línea de comandos (args) */
   if (args) {
     for (int i = 0; i < MAX_USERS; i++) {
       if (args->users[i].name && args->users[i].pass &&

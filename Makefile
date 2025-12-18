@@ -148,9 +148,6 @@ stress: server tools
 	test -x "$$SOCKS_BIN"; \
 	test -x "$$STRESS_BIN"; \
 	\
-	echo "[STRESS] Writing auth.db..."; \
-	echo "$$USER:$$PASS" > auth.db; \
-	\
 	echo "[STRESS] Ensuring ports are free (SOCKS=$$SOCKS_PORT, SINK=$$SINK_PORT)..."; \
 	if ss -lnt "( sport = :$$SOCKS_PORT )" | grep -q LISTEN; then \
 		echo "[STRESS][ERR] Port $$SOCKS_PORT already in use (SOCKS)."; \

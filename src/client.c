@@ -31,7 +31,7 @@ void show_help(const char* program) {
 }
 
 void show_version(void) {
-    printf("SOCKS5 Proxy Client v1.0\n");
+    printf("SOCKS5 Proxy Client v2.0\n");
     printf("ITBA Protocolos de Comunicación 2025-1C\n");
 }
 
